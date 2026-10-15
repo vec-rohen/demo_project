@@ -1,0 +1,62 @@
+{
+  "plant": {
+    "name": "Process Skid 01",
+    "description": "Heated buffer tank with variable-speed inlet pump"
+  },
+  "tags": [
+    {"name": "DI_EStopOK",       "kind": "DI", "type": "bool",  "description": "E-stop circuit healthy",       "alarm": {"state": false, "priority": "high", "message": "E-stop activated"},
+     "modbus": {"table": "discrete", "address": 0}},
+    {"name": "DI_PumpRunning",   "kind": "DI", "type": "bool",  "description": "Pump running feedback",
+     "modbus": {"table": "discrete", "address": 1}},
+    {"name": "DI_LevelHighSw",   "kind": "DI", "type": "bool",  "description": "Tank high level switch",       "alarm": {"state": true, "priority": "high", "message": "High level switch tripped"},
+     "modbus": {"table": "discrete", "address": 2}},
+    {"name": "DI_LevelLowSw",    "kind": "DI", "type": "bool",  "description": "Tank low level switch",        "alarm": {"state": true, "priority": "medium", "message": "Low level switch tripped"},
+     "modbus": {"table": "discrete", "address": 3}},
+    {"name": "DI_DoorClosed",    "kind": "DI", "type": "bool",  "description": "Panel door closed",            "alarm": {"state": false, "priority": "low", "message": "Panel door open"},
+     "modbus": {"table": "discrete", "address": 4}},
+
+    {"name": "DO_PumpRun",       "kind": "DO", "type": "bool",  "description": "Inlet pump run command",       "writable": true, "manual_only": true,
+     "modbus": {"table": "coil", "address": 0}},
+    {"name": "DO_HeaterOn",      "kind": "DO", "type": "bool",  "description": "Heater contactor",             "writable": true, "manual_only": true,
+     "modbus": {"table": "coil", "address": 1}},
+    {"name": "DO_DrainValve",    "kind": "DO", "type": "bool",  "description": "Drain valve open",             "writable": true,
+     "modbus": {"table": "coil", "address": 2}},
+    {"name": "DO_AlarmBeacon",   "kind": "DO", "type": "bool",  "description": "Alarm beacon",
+     "modbus": {"table": "coil", "address": 3}},
+
+    {"name": "AI_TankLevel",     "kind": "AI", "type": "float", "description": "Tank level",        "unit": "%",     "min": 0, "max": 100, "decimals": 1,
+     "alarm": {"hihi": 95, "hi": "SP_LevelHiAlarm", "lo": 10, "deadband": 1},
+     "modbus": {"table": "input", "address": 0, "scale": 10}},
+    {"name": "AI_TankTemp",      "kind": "AI", "type": "float", "description": "Tank temperature",  "unit": "°C",    "min": 0, "max": 100, "decimals": 1,
+     "alarm": {"hi": "SP_TempHiAlarm", "lo": 5, "deadband": 0.5},
+     "modbus": {"table": "input", "address": 1, "scale": 10}},
+    {"name": "AI_InletFlow",     "kind": "AI", "type": "float", "description": "Inlet flow",        "unit": "L/min", "min": 0, "max": 120, "decimals": 1,
+     "modbus": {"table": "input", "address": 2, "scale": 10}},
+    {"name": "AI_OutletFlow",    "kind": "AI", "type": "float", "description": "Outlet flow",       "unit": "L/min", "min": 0, "max": 120, "decimals": 1,
+     "modbus": {"table": "input", "address": 3, "scale": 10}},
+    {"name": "AI_PumpPressure",  "kind": "AI", "type": "float", "description": "Pump discharge pressure", "unit": "bar", "min": 0, "max": 10, "decimals": 2,
+     "alarm": {"hi": 8, "deadband": 0.2},
+     "modbus": {"table": "input", "address": 4, "scale": 100}},
+    {"name": "AI_MotorCurrent",  "kind": "AI", "type": "float", "description": "Pump motor current", "unit": "A",    "min": 0, "max": 20, "decimals": 1,
+     "alarm": {"hi": 16, "deadband": 0.5},
+     "modbus": {"table": "input", "address": 5, "scale": 10}},
+
+    {"name": "AO_PumpSpeed",     "kind": "AO", "type": "float", "description": "Pump speed reference", "unit": "%",  "min": 0, "max": 100, "decimals": 1, "writable": true, "manual_only": true,
+     "modbus": {"table": "holding", "address": 0, "scale": 10}},
+    {"name": "AO_OutletValve",   "kind": "AO", "type": "float", "description": "Outlet valve position", "unit": "%", "min": 0, "max": 100, "decimals": 1, "writable": true,
+     "modbus": {"table": "holding", "address": 1, "scale": 10}},
+
+    {"name": "SP_AutoMode",      "kind": "SP", "type": "bool",  "description": "Automatic control enabled", "writable": true,
+     "modbus": {"table": "coil", "address": 10}},
+    {"name": "SP_LevelTarget",   "kind": "SP", "type": "float", "description": "Level target",       "unit": "%",  "min": 10, "max": 90, "decimals": 1, "writable": true,
+     "modbus": {"table": "holding", "address": 10, "scale": 10}},
+    {"name": "SP_TempTarget",    "kind": "SP", "type": "float", "description": "Temperature target", "unit": "°C", "min": 10, "max": 80, "decimals": 1, "writable": true,
+     "modbus": {"table": "holding", "address": 11, "scale": 10}},
+    {"name": "SP_LevelHiAlarm",  "kind": "SP", "type": "float", "description": "Level high alarm limit", "unit": "%",  "min": 50, "max": 95, "decimals": 1, "writable": true,
+     "modbus": {"table": "holding", "address": 12, "scale": 10}},
+    {"name": "SP_TempHiAlarm",   "kind": "SP", "type": "float", "description": "Temperature high alarm limit", "unit": "°C", "min": 30, "max": 95, "decimals": 1, "writable": true,
+     "modbus": {"table": "holding", "address": 13, "scale": 10}},
+    {"name": "SP_LevelKp",       "kind": "SP", "type": "float", "description": "Level PI gain",     "unit": "",   "min": 0.1, "max": 20, "decimals": 2, "writable": true,
+     "modbus": {"table": "holding", "address": 14, "scale": 100}}
+  ]
+}

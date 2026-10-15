@@ -1,0 +1,223 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Plant HMI</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='3' fill='%23394150'/%3E%3Cpath d='M3 11h2V7h2v4h2V4h2v7h2' stroke='%2378c4b4' stroke-width='1.5' fill='none'/%3E%3C/svg%3E">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true"></span>
+      <div>
+        <div class="brand-name" id="plant-name">Plant HMI</div>
+        <div class="brand-sub" id="plant-desc"></div>
+      </div>
+    </div>
+    <div class="status-strip">
+      <span class="chip" id="conn-chip"><span class="dot"></span><span id="conn-text">Connecting…</span></span>
+      <span class="chip" id="mode-chip">—</span>
+      <span class="chip mono" id="clock">--:--:--</span>
+      <button class="icon-btn" id="theme-btn" title="Toggle light/dark theme" aria-label="Toggle theme"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><circle cx="8" cy="8" r="6.5" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M8 1.5a6.5 6.5 0 0 1 0 13z" fill="currentColor"/></svg></button>
+    </div>
+  </header>
+
+  <button class="alarm-banner" id="alarm-banner" hidden>
+    <span class="alarm-banner-count" id="alarm-banner-count">0</span>
+    <span id="alarm-banner-text"></span>
+    <span class="alarm-banner-hint">View alarms →</span>
+  </button>
+
+  <nav class="tabs" role="tablist">
+    <button role="tab" data-tab="overview" aria-selected="true">Overview</button>
+    <button role="tab" data-tab="io">I/O</button>
+    <button role="tab" data-tab="setpoints">Setpoints &amp; Control</button>
+    <button role="tab" data-tab="trends">Trends</button>
+    <button role="tab" data-tab="alarms">Alarms &amp; Events <span class="badge" id="alarm-tab-badge" hidden>0</span></button>
+  </nav>
+
+  <main>
+    <!-- OVERVIEW -->
+    <section class="view" id="view-overview">
+      <div class="overview-grid">
+        <div class="panel mimic-panel">
+          <div class="panel-head"><h2>Process</h2><span class="muted" id="mimic-mode"></span></div>
+          <svg id="mimic" viewBox="0 0 720 380" role="img" aria-label="Process mimic diagram">
+            <defs>
+              <clipPath id="tank-clip"><rect x="300" y="70" width="170" height="230" rx="10"/></clipPath>
+            </defs>
+            <!-- inlet pipe -->
+            <path class="pipe" id="pipe-in" d="M20 270 H120 M180 270 H230 V40 H385 V70"/>
+            <!-- pump -->
+            <g id="pump" class="equip" transform="translate(150 270)">
+              <circle r="28" class="equip-body"/>
+              <path d="M-12 -18 L22 0 L-12 18 Z" class="equip-glyph"/>
+            </g>
+            <text x="150" y="325" class="mimic-label" text-anchor="middle">P-101</text>
+            <text x="150" y="342" class="mimic-value" text-anchor="middle" data-value="AO_PumpSpeed"></text>
+            <!-- flow + pressure readouts -->
+            <g class="readout" transform="translate(96 84)">
+              <rect width="120" height="44" rx="4"/>
+              <text x="8" y="17" class="mimic-label">FT-101</text>
+              <text x="8" y="36" class="mimic-value" data-value="AI_InletFlow"></text>
+            </g>
+            <g class="readout" transform="translate(50 170)">
+              <rect width="120" height="44" rx="4"/>
+              <text x="8" y="17" class="mimic-label">PT-101</text>
+              <text x="8" y="36" class="mimic-value" data-value="AI_PumpPressure"></text>
+            </g>
+            <!-- tank -->
+            <rect x="300" y="70" width="170" height="230" rx="10" class="tank-shell"/>
+            <rect id="tank-fill" x="300" y="300" width="170" height="0" clip-path="url(#tank-clip)" class="tank-fill"/>
+            <line id="tank-sp" x1="292" x2="478" y1="0" y2="0" class="sp-line"/>
+            <line id="tank-hi" x1="292" x2="478" y1="0" y2="0" class="limit-line"/>
+            <text x="385" y="175" class="tank-level" text-anchor="middle" data-value="AI_TankLevel"></text>
+            <text x="385" y="200" class="mimic-label" text-anchor="middle">LT-101</text>
+            <!-- heater -->
+            <path id="heater" class="heater" d="M325 285 q10 -14 20 0 t20 0 t20 0 t20 0 t20 0 t20 0"/>
+            <text x="300" y="318" class="mimic-label">H-101</text>
+            <g class="readout" transform="translate(500 112)">
+              <rect width="120" height="44" rx="4"/>
+              <text x="8" y="17" class="mimic-label">TT-101</text>
+              <text x="8" y="36" class="mimic-value" data-value="AI_TankTemp"></text>
+            </g>
+            <!-- level switches -->
+            <g id="lsh" class="switch"><circle cx="470" cy="85" r="7"/></g>
+            <text x="482" y="89" class="mimic-label tiny">LSH</text>
+            <g id="lsl" class="switch"><circle cx="470" cy="290" r="7"/></g>
+            <text x="482" y="294" class="mimic-label tiny">LSL</text>
+            <!-- outlet -->
+            <path class="pipe" id="pipe-out" d="M470 270 H560 M600 270 H700"/>
+            <g id="valve" class="equip" transform="translate(580 270)">
+              <path d="M-20 -14 L20 14 L20 -14 L-20 14 Z" class="equip-body"/>
+            </g>
+            <text x="580" y="305" class="mimic-label" text-anchor="middle">XV-102</text>
+            <text x="580" y="322" class="mimic-value" text-anchor="middle" data-value="AO_OutletValve"></text>
+            <g class="readout" transform="translate(600 190)">
+              <rect width="110" height="44" rx="4"/>
+              <text x="8" y="17" class="mimic-label">FT-102</text>
+              <text x="8" y="36" class="mimic-value" data-value="AI_OutletFlow"></text>
+            </g>
+            <!-- drain -->
+            <path class="pipe" id="pipe-drain" d="M385 300 V350 H520"/>
+            <g id="drain" class="equip" transform="translate(440 350)">
+              <path d="M-14 -10 L14 10 L14 -10 L-14 10 Z" class="equip-body"/>
+            </g>
+            <text x="470" y="372" class="mimic-label">XV-103 drain</text>
+          </svg>
+          <div class="legend">
+            <span><i class="lg lg-run"></i>Running / open</span>
+            <span><i class="lg lg-stop"></i>Stopped / closed</span>
+            <span><i class="lg lg-sp"></i>Setpoint</span>
+            <span><i class="lg lg-lim"></i>Alarm limit</span>
+          </div>
+        </div>
+
+        <div class="side-col">
+          <div class="panel">
+            <div class="panel-head"><h2>Key process values</h2></div>
+            <div class="kpis" id="kpis"></div>
+          </div>
+          <div class="panel">
+            <div class="panel-head"><h2>Active alarms</h2><button class="btn small" data-goto="alarms">All alarms</button></div>
+            <ul class="mini-alarms" id="mini-alarms"></ul>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- I/O -->
+    <section class="view" id="view-io" hidden>
+      <div class="io-grid">
+        <div class="panel"><div class="panel-head"><h2>Digital inputs</h2><span class="muted" id="sim-note"></span></div><table class="io-table" id="tbl-DI"></table></div>
+        <div class="panel"><div class="panel-head"><h2>Digital outputs</h2></div><table class="io-table" id="tbl-DO"></table></div>
+        <div class="panel"><div class="panel-head"><h2>Analog inputs</h2></div><table class="io-table" id="tbl-AI"></table></div>
+        <div class="panel"><div class="panel-head"><h2>Analog outputs</h2></div><table class="io-table" id="tbl-AO"></table></div>
+      </div>
+    </section>
+
+    <!-- SETPOINTS -->
+    <section class="view" id="view-setpoints" hidden>
+      <div class="panel mode-panel">
+        <div>
+          <h2>Control mode</h2>
+          <p class="muted">In <b>Automatic</b> the PLC drives the pump to the level target and cycles the heater to the temperature target. Switch to <b>Manual</b> to operate outputs directly.</p>
+        </div>
+        <div class="segmented" id="mode-switch" role="radiogroup" aria-label="Control mode">
+          <button data-mode="true" role="radio">Automatic</button>
+          <button data-mode="false" role="radio">Manual</button>
+        </div>
+      </div>
+      <h3 class="section-title">Setpoints &amp; targets</h3>
+      <div class="sp-grid" id="sp-grid"></div>
+      <h3 class="section-title">Manual control <span class="muted" id="manual-note"></span></h3>
+      <div class="sp-grid" id="manual-grid"></div>
+    </section>
+
+    <!-- TRENDS -->
+    <section class="view" id="view-trends" hidden>
+      <div class="panel">
+        <div class="panel-head trend-head">
+          <h2>Trend</h2>
+          <div class="segmented small" id="trend-window">
+            <button data-window="60">1 min</button>
+            <button data-window="300" aria-pressed="true">5 min</button>
+            <button data-window="900">15 min</button>
+          </div>
+        </div>
+        <div class="trend-picker" id="trend-picker"></div>
+        <div class="trend-wrap">
+          <canvas id="trend" height="380"></canvas>
+          <div class="trend-tip" id="trend-tip" hidden></div>
+        </div>
+        <p class="muted small-print">Each pen is scaled to its own engineering range (0–100 % of span); hover for values.</p>
+      </div>
+    </section>
+
+    <!-- ALARMS -->
+    <section class="view" id="view-alarms" hidden>
+      <div class="panel">
+        <div class="panel-head"><h2>Alarm summary</h2><button class="btn" id="ack-all">Acknowledge all</button></div>
+        <table class="data-table" id="alarm-table">
+          <thead><tr><th>Priority</th><th>Raised</th><th>Alarm</th><th>Value</th><th>Limit</th><th>State</th><th></th></tr></thead>
+          <tbody></tbody>
+        </table>
+        <p class="empty" id="alarm-empty">No active or unacknowledged alarms.</p>
+      </div>
+      <div class="panel">
+        <div class="panel-head">
+          <h2>Event journal</h2>
+          <div class="segmented small" id="event-filter">
+            <button data-filter="" aria-pressed="true">All</button>
+            <button data-filter="alarm">Alarms</button>
+            <button data-filter="write">Operator</button>
+            <button data-filter="system">System</button>
+          </div>
+        </div>
+        <div class="journal-wrap">
+          <table class="data-table" id="event-table">
+            <thead><tr><th>Time</th><th>Type</th><th>Message</th><th>By</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <dialog id="confirm">
+    <form method="dialog">
+      <h3 id="confirm-title">Confirm change</h3>
+      <p id="confirm-body"></p>
+      <div class="dialog-actions">
+        <button value="cancel" class="btn">Cancel</button>
+        <button value="ok" class="btn primary" id="confirm-ok">Apply</button>
+      </div>
+    </form>
+  </dialog>
+  <div class="toasts" id="toasts" aria-live="polite"></div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

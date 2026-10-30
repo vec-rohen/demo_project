@@ -22,6 +22,7 @@
         <div class="brand-name" id="plant-name">Plant HMI</div>
         <div class="brand-sub" id="plant-desc"></div>
       </div>
+      <select id="asset-picker" class="asset-picker" aria-label="Asset" hidden></select>
     </div>
     <div class="status-strip">
       <span class="chip" id="conn-chip"><span class="dot"></span><span id="conn-text">Connecting…</span></span>
@@ -55,6 +56,7 @@
     <button role="tab" data-tab="setpoints">Setpoints &amp; Control</button>
     <button role="tab" data-tab="trends">Trends</button>
     <button role="tab" data-tab="alarms">Alarms &amp; Events <span class="badge" id="alarm-tab-badge" hidden>0</span></button>
+    <button role="tab" data-tab="commission" id="commission-tab" hidden>Commissioning</button>
     <button role="tab" data-tab="users" id="users-tab" hidden>Users</button>
   </nav>
 
@@ -64,7 +66,7 @@
     <!-- OVERVIEW -->
     <section class="view" id="view-overview">
       <div class="overview-grid">
-        <div class="panel mimic-panel">
+        <div class="panel mimic-panel" id="mimic-panel">
           <div class="panel-head"><h2>Process</h2><span class="muted" id="mimic-mode"></span></div>
           <svg id="mimic" viewBox="0 0 720 380" role="img" aria-label="Process mimic diagram">
             <defs>
@@ -137,6 +139,11 @@
           </div>
         </div>
 
+        <div class="panel" id="status-panel" hidden>
+          <div class="panel-head"><h2>Equipment status</h2></div>
+          <div class="status-grid" id="status-grid"></div>
+        </div>
+
         <div class="side-col">
           <div class="panel">
             <div class="panel-head"><h2>Key process values</h2></div>
@@ -187,6 +194,9 @@
             <button data-window="60">1 min</button>
             <button data-window="300" aria-pressed="true">5 min</button>
             <button data-window="900">15 min</button>
+            <button data-window="3600">1 h</button>
+            <button data-window="86400">24 h</button>
+            <button data-window="604800">7 d</button>
           </div>
         </div>
         <div class="trend-picker" id="trend-picker"></div>
@@ -215,6 +225,7 @@
             <button data-filter="" aria-pressed="true">All</button>
             <button data-filter="alarm">Alarms</button>
             <button data-filter="write">Operator</button>
+            <button data-filter="config">Config</button>
             <button data-filter="auth">Sign-ins</button>
             <button data-filter="system">System</button>
           </div>
@@ -227,6 +238,78 @@
         </div>
       </div>
     </section>
+    <!-- COMMISSIONING (engineers view & sign off; integrators change configuration) -->
+    <section class="view" id="view-commission" hidden>
+      <div class="commission-grid">
+        <div class="panel">
+          <div class="panel-head"><h2>Device &amp; configuration</h2></div>
+          <dl class="facts" id="device-facts"></dl>
+          <div class="btn-row" id="package-actions">
+            <button class="btn" id="changes-btn">Local changes <span class="badge muted-badge" id="changes-count">0</span></button>
+            <button class="btn integrator-only" id="download-package">Download package</button>
+            <label class="btn integrator-only file-btn">Load package…<input type="file" id="package-file" accept=".json,application/json" hidden></label>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-head"><h2>PLC connection</h2><span class="muted" id="plc-live"></span></div>
+          <form id="plc-form" class="plc-form" novalidate>
+            <div class="field">
+              <label for="plc-protocol">Protocol</label>
+              <select id="plc-protocol">
+                <option value="modbus">Modbus TCP</option>
+                <option value="sim">Simulator (no PLC)</option>
+              </select>
+            </div>
+            <div class="field modbus-only">
+              <label for="plc-host">PLC IP address</label>
+              <input id="plc-host" class="mono" inputmode="decimal" autocomplete="off" spellcheck="false" placeholder="192.168.1.10">
+            </div>
+            <div class="field modbus-only small-field">
+              <label for="plc-port">Port</label>
+              <input id="plc-port" type="number" inputmode="numeric" min="1" max="65535">
+            </div>
+            <div class="field modbus-only small-field">
+              <label for="plc-unit">Unit ID</label>
+              <input id="plc-unit" type="number" inputmode="numeric" min="0" max="255">
+            </div>
+            <div class="field small-field">
+              <label for="plc-poll">Poll (ms)</label>
+              <input id="plc-poll" type="number" inputmode="numeric" min="100" max="60000" step="50">
+            </div>
+          </form>
+          <div class="btn-row">
+            <button class="btn" id="plc-test">Test connection</button>
+            <button class="btn primary integrator-only" id="plc-save">Save &amp; apply</button>
+          </div>
+          <div class="test-result" id="plc-result" role="status" hidden></div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head">
+          <h2>I/O check</h2>
+          <div class="btn-row tight">
+            <div class="segmented small" id="io-filter">
+              <button data-iofilter="" aria-pressed="true">All</button>
+              <button data-iofilter="open">To check</button>
+              <button data-iofilter="fail">Failed</button>
+            </div>
+            <button class="btn small integrator-only" id="add-tag">Add I/O point</button>
+            <button class="btn small" id="io-report">Export report</button>
+          </div>
+        </div>
+        <div class="io-progress" id="io-progress"></div>
+        <div class="table-scroll">
+          <table class="data-table io-check-table" id="io-check-table">
+            <thead><tr><th>Point</th><th>Type</th><th>Address</th><th>Live value</th><th>Check</th><th>Checked by</th><th></th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <p class="muted small-print">Force or simulate each signal at the PLC, confirm the value here, then mark it. Editing a point clears its check so it gets re-tested.</p>
+      </div>
+    </section>
+
     <!-- USERS (engineers) -->
     <section class="view" id="view-users" hidden>
       <div class="panel">
@@ -241,7 +324,8 @@
       <div class="role-grid">
         <div class="role-card"><span class="role-tag viewer">Viewer</span><p>Sees every screen, trend and alarm. Can't change anything.</p></div>
         <div class="role-card"><span class="role-tag operator">Operator</span><p>Changes setpoints and outputs, switches Auto/Manual and acknowledges alarms.</p></div>
-        <div class="role-card"><span class="role-tag engineer">Engineer</span><p>Everything an operator can do, plus alarm limits, loop tuning, simulator inputs and managing users.</p></div>
+        <div class="role-card"><span class="role-tag engineer">Engineer</span><p>Everything an operator can do, plus alarm limits, loop tuning, simulator inputs, I/O check sign-off and managing users.</p></div>
+        <div class="role-card"><span class="role-tag integrator">Integrator</span><p>Your commissioning technicians: everything above, plus PLC connection settings, editing I/O on site and loading configuration packages.</p></div>
       </div>
     </section>
   </main>
@@ -297,6 +381,80 @@
     </form>
   </dialog>
 
+  <dialog id="tag-dialog" class="wide-dialog" aria-labelledby="td-title">
+    <form id="tag-form" novalidate>
+      <h3 id="td-title">Edit I/O point</h3>
+      <div class="form-grid">
+        <div class="field"><label for="td-name">Tag name</label><input id="td-name" class="mono" required autocomplete="off" spellcheck="false"></div>
+        <div class="field span2"><label for="td-description">Description</label><input id="td-description" autocomplete="off"></div>
+        <div class="field"><label for="td-kind">Kind</label>
+          <select id="td-kind">
+            <option value="DI">DI – digital input</option><option value="DO">DO – digital output</option>
+            <option value="AI">AI – analog input</option><option value="AO">AO – analog output</option>
+            <option value="SP">SP – setpoint</option>
+          </select></div>
+        <div class="field"><label for="td-type">Value type</label>
+          <select id="td-type"><option value="bool">Digital (on/off)</option><option value="float">Analog (number)</option></select></div>
+        <div class="field analog-only"><label for="td-unit">Unit</label><input id="td-unit" autocomplete="off"></div>
+        <div class="field analog-only"><label for="td-decimals">Decimals</label><input id="td-decimals" type="number" min="0" max="6"></div>
+        <div class="field analog-only"><label for="td-min">Range min</label><input id="td-min" type="number" step="any" inputmode="decimal"></div>
+        <div class="field analog-only"><label for="td-max">Range max</label><input id="td-max" type="number" step="any" inputmode="decimal"></div>
+        <div class="field"><label for="td-role">Who may change it</label>
+          <select id="td-role"><option value="operator">Operator</option><option value="engineer">Engineer</option><option value="integrator">Integrator</option></select></div>
+      </div>
+      <label class="check"><input type="checkbox" id="td-writable"> Operators can write this point from the HMI</label>
+
+      <h4>Modbus address</h4>
+      <div class="form-grid">
+        <div class="field"><label for="td-table">Register type</label>
+          <select id="td-table">
+            <option value="">Not mapped</option>
+            <option value="coil">Coil (0x)</option><option value="discrete">Discrete input (1x)</option>
+            <option value="input">Input register (3x)</option><option value="holding">Holding register (4x)</option>
+          </select></div>
+        <div class="field"><label for="td-address">Address (0-based)</label><input id="td-address" type="number" min="0" max="65535" inputmode="numeric"></div>
+        <div class="field analog-only"><label for="td-scale">Scale (raw ÷)</label><input id="td-scale" type="number" step="any" min="0" inputmode="decimal"></div>
+      </div>
+
+      <h4>Alarm</h4>
+      <div class="form-grid digital-only">
+        <div class="field"><label for="td-alarm-state">Raise alarm when</label>
+          <select id="td-alarm-state"><option value="">No alarm</option><option value="true">ON</option><option value="false">OFF</option></select></div>
+        <div class="field"><label for="td-alarm-priority">Priority</label>
+          <select id="td-alarm-priority"><option value="high">High</option><option value="medium">Medium</option><option value="low">Low</option></select></div>
+        <div class="field span2"><label for="td-alarm-message">Alarm message</label><input id="td-alarm-message" autocomplete="off"></div>
+      </div>
+      <div class="form-grid analog-only">
+        <div class="field"><label for="td-alarm-hihi">High-high</label><input id="td-alarm-hihi" class="mono" autocomplete="off" placeholder="—"></div>
+        <div class="field"><label for="td-alarm-hi">High</label><input id="td-alarm-hi" class="mono" autocomplete="off" placeholder="—"></div>
+        <div class="field"><label for="td-alarm-lo">Low</label><input id="td-alarm-lo" class="mono" autocomplete="off" placeholder="—"></div>
+        <div class="field"><label for="td-alarm-lolo">Low-low</label><input id="td-alarm-lolo" class="mono" autocomplete="off" placeholder="—"></div>
+        <div class="field"><label for="td-alarm-deadband">Deadband</label><input id="td-alarm-deadband" type="number" step="any" min="0" inputmode="decimal"></div>
+      </div>
+      <p class="hint analog-only">A limit can be a number, or the name of a setpoint tag that holds it (e.g. SP_LevelHiAlarm).</p>
+
+      <p class="form-error" id="td-error" role="alert" hidden></p>
+      <div class="dialog-actions">
+        <button type="button" class="btn danger" id="td-delete">Delete point</button>
+        <span class="spacer"></span>
+        <button type="button" class="btn" id="td-cancel">Cancel</button>
+        <button class="btn primary">Save &amp; apply</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="changes-dialog" class="wide-dialog" aria-labelledby="cd-title">
+    <h3 id="cd-title">Changes made on this device</h3>
+    <p class="muted">Configuration edits made here on site. They're kept until the cloud portal picks them up, so nothing done during commissioning is lost.</p>
+    <div class="table-scroll journal-wrap">
+      <table class="data-table" id="changes-table">
+        <thead><tr><th>Time</th><th>By</th><th>What</th><th>Change</th><th>Synced</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <div class="dialog-actions"><button class="btn" id="cd-close">Close</button></div>
+  </dialog>
+
   <dialog id="value-dialog" aria-labelledby="vd-title">
     <form id="vd-form" novalidate>
       <h3 id="vd-title">Set value</h3>
@@ -328,6 +486,7 @@
   </dialog>
   <div class="toasts" id="toasts" aria-live="polite"></div>
 
+  <script src="/static/commission.js"></script>
   <script src="/static/app.js"></script>
 </body>
 </html>

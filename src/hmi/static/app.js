@@ -17,11 +17,21 @@ const S = {
   eventFilter: "",
   hoverX: null,
   me: null,            // signed-in user
+  site: null,          // client / site / device / assets on this gateway
+  assetId: null,       // the asset shown on every tab
+  longHistory: {},     // trend data from the device database for windows > 15 min
 };
-const ROLE_ORDER = ["viewer", "operator", "engineer"];
+// Every asset-specific API call and the live feed are scoped to the selected asset.
+const A = () => `/api/assets/${encodeURIComponent(S.assetId)}`;
+const hasRole = (role) => !!S.me && ROLE_ORDER.indexOf(S.me.role) >= ROLE_ORDER.indexOf(role);
+const ROLE_ORDER = ["viewer", "operator", "engineer", "integrator"];
 const HISTORY_SECONDS = 900;
 const PEN_COLORS = ["#4e9be6", "#e8875a", "#5fbf8f", "#c77dd6", "#d9b44a", "#6cc7d9", "#e46a8a", "#9aa0a8"];
-const KPI_TAGS = ["AI_TankLevel", "AI_TankTemp", "AI_InletFlow", "AI_OutletFlow", "AI_PumpPressure", "AI_MotorCurrent"];
+const DEMO_KPIS = ["AI_TankLevel", "AI_TankTemp", "AI_InletFlow", "AI_OutletFlow", "AI_PumpPressure", "AI_MotorCurrent"];
+const isDemoScreen = () => S.config?.asset?.screen === "tank-demo";
+// The demo tank has a hand-drawn mimic; any other asset gets an automatic overview.
+const kpiTags = () => (isDemoScreen() ? DEMO_KPIS : Object.values(S.tags).filter((t) => t.kind === "AI").map((t) => t.name))
+  .filter((n) => S.tags[n]);
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
@@ -89,7 +99,12 @@ async function api(method, path, body) {
   });
   const data = await res.json().catch(() => ({}));
   if (res.status === 401 && path !== "/api/me/password") { location.replace("/login?expired=1"); throw new Error("Signed out"); }
-  if (!res.ok) throw new Error(data.detail || `${res.status} ${res.statusText}`);
+  if (!res.ok) {
+    const detail = Array.isArray(data.detail) // FastAPI validation errors arrive as a list
+      ? data.detail.map((d) => `${(d.loc || []).slice(1).join(".")}: ${d.msg}`).join("; ")
+      : data.detail;
+    throw new Error(detail || `${res.status} ${res.statusText}`);
+  }
   return data;
 }
 
@@ -114,7 +129,7 @@ async function writeTag(name, value, { confirm = true } = {}) {
     if (!ok) return false;
   }
   try {
-    const res = await api("POST", `/api/tags/${encodeURIComponent(name)}`, { value });
+    const res = await api("POST", `${A()}/tags/${encodeURIComponent(name)}`, { value });
     S.values[name] = res.value;
     toast(`${tag.description} set to ${fmt(name, res.value)}`);
     renderAll();
@@ -128,12 +143,13 @@ async function writeTag(name, value, { confirm = true } = {}) {
 /* ---------------------------------------------------------- live data */
 function connect() {
   const proto = location.protocol === "https:" ? "wss" : "ws";
-  const ws = new WebSocket(`${proto}://${location.host}/ws`);
+  const ws = new WebSocket(`${proto}://${location.host}/ws/${encodeURIComponent(S.assetId)}`);
   let retry = 1000;
   ws.onopen = () => { retry = 1000; };
   ws.onmessage = (msg) => applyUpdate(JSON.parse(msg.data));
   ws.onclose = (ev) => {
     if (ev.code === 4401) { location.replace("/login?expired=1"); return; }
+    if (ev.code === 4404) { location.replace("/"); return; } // asset no longer on this device
     S.connected = null; // web link down (distinct from PLC link down)
     renderStatus();
     setTimeout(connect, retry);
@@ -169,6 +185,7 @@ function renderAll() {
   if (S.tab === "trends") renderTrend();
   if (S.tab === "alarms") renderAlarms();
   if (S.tab === "users") renderUsers();
+  if (S.tab === "commission") renderCommission();
 }
 
 function renderStatus() {
@@ -176,6 +193,7 @@ function renderStatus() {
   chip.className = "chip " + (S.connected ? "ok" : "bad");
   $("#conn-text").textContent = S.connected === null ? "HMI server offline" : S.connected ? "PLC online" : "PLC comms lost";
   const mode = $("#mode-chip");
+  mode.hidden = !S.tags.SP_AutoMode; // only assets with an auto/manual mode show it
   mode.textContent = isAuto() ? "AUTO" : "MANUAL";
   mode.className = "chip " + (isAuto() ? "" : "manual");
 
@@ -202,6 +220,33 @@ function renderBoundValues() {
 /* --- overview */
 function renderOverview() {
   const v = S.values;
+  $("#mimic-panel").hidden = !isDemoScreen();
+  $("#status-panel").hidden = isDemoScreen();
+  if (!isDemoScreen()) renderStatusPanel();
+  else renderMimic(v);
+  renderKpisAndAlarms();
+}
+
+// Automatic overview for any asset: every digital point as a status lamp.
+function renderStatusPanel() {
+  const grid = $("#status-grid");
+  const digital = Object.values(S.tags).filter((t) => t.type === "bool");
+  if (grid.childElementCount !== digital.length) {
+    grid.replaceChildren(...digital.map((t) => el("div", { class: "status-item", "data-status": t.name },
+      el("span", { class: "lamp" }),
+      el("span", {}, el("div", { class: "io-desc", text: t.description || t.name }),
+        el("div", { class: "io-name", text: t.name })),
+      el("span", { class: "io-val" }))));
+    if (!digital.length) grid.append(el("p", { class: "muted", text: "This asset has no digital points." }));
+  }
+  for (const item of $$("[data-status]", grid)) {
+    const name = item.dataset.status, alarm = tagAlarm(name);
+    $(".lamp", item).className = "lamp" + (alarm ? " alarm" : S.values[name] ? " on" : "");
+    $(".io-val", item).textContent = fmt(name);
+  }
+}
+
+function renderMimic(v) {
   const toggle = (sel, cls, on) => $(sel).classList.toggle(cls, !!on);
   toggle("#pump", "on", v.DI_PumpRunning);
   toggle("#pump", "alarm", !v.DI_EStopOK); // interlocked off
@@ -230,11 +275,13 @@ function renderOverview() {
   $("#mimic-mode").textContent = isAuto()
     ? `Auto · level SP ${fmt("SP_LevelTarget")} · temp SP ${fmt("SP_TempTarget")}`
     : "Manual control";
+}
 
+function renderKpisAndAlarms() {
   // KPI cards
   const kpis = $("#kpis");
   if (!kpis.childElementCount) {
-    for (const name of KPI_TAGS.filter((n) => S.tags[n])) {
+    for (const name of kpiTags()) {
       kpis.append(el("div", { class: "kpi", "data-kpi": name },
         el("span", { class: "kpi-name", text: S.tags[name].description }),
         el("span", { class: "kpi-val" }),
@@ -401,7 +448,7 @@ function initValueDialog() {
 
 async function simulateInput(name) {
   try {
-    await api("POST", `/api/simulate/${encodeURIComponent(name)}`, { value: !S.values[name] });
+    await api("POST", `${A()}/simulate/${encodeURIComponent(name)}`, { value: !S.values[name] });
   } catch (err) { toast(err.message, "error"); }
 }
 
@@ -477,6 +524,7 @@ function syncInputs(card, tag) {
 }
 
 function renderSetpoints() {
+  $(".mode-panel").hidden = !S.tags.SP_AutoMode;
   const modeReason = lockReason(S.tags.SP_AutoMode || {});
   for (const btn of $$("#mode-switch button")) {
     btn.setAttribute("aria-checked", String((btn.dataset.mode === "true") === isAuto()));
@@ -523,6 +571,7 @@ function buildTrendPicker() {
     btn.onclick = () => {
       S.pens.has(t.name) ? S.pens.delete(t.name) : S.pens.add(t.name);
       btn.setAttribute("aria-pressed", String(S.pens.has(t.name)));
+      loadLongHistory();
       renderTrend();
     };
     picker.append(btn);
@@ -531,6 +580,7 @@ function buildTrendPicker() {
     b.onclick = () => {
       S.trendWindow = Number(b.dataset.window);
       $$("#trend-window button").forEach((x) => x.setAttribute("aria-pressed", String(x === b)));
+      loadLongHistory();
       renderTrend();
     };
   }
@@ -546,7 +596,39 @@ function buildTrendPicker() {
   });
 }
 
+const LIVE_WINDOW = 900; // seconds kept in the browser; longer windows come from the device database
+function trendData(name) {
+  const live = S.history[name] || [];
+  if (S.trendWindow <= LIVE_WINDOW) return live;
+  // Long windows: averaged points from the device database, then the live 1 s data for the newest part.
+  const cutoff = live.length ? live[0][0] : Infinity;
+  return [...(S.longHistory[name] || []).filter((p) => p[0] < cutoff), ...live];
+}
+
+async function loadLongHistory() {
+  if (S.trendWindow <= LIVE_WINDOW || !S.pens.size) return;
+  try {
+    const tags = [...S.pens].map(encodeURIComponent).join(",");
+    S.longHistory = await api("GET", `${A()}/history?tags=${tags}&seconds=${S.trendWindow}`);
+    S.longHistory.loadedAt = Date.now();
+    renderTrend();
+  } catch (err) { toast(err.message, "error"); }
+}
+
+function timeAxis(window) {
+  // [grid step in seconds, label formatter]
+  if (window <= 60) return [10, (t) => timeStr(t)];
+  if (window <= 900) return [window <= 300 ? 60 : 180, (t) => timeStr(t).slice(0, 5)];
+  if (window <= 3600) return [600, (t) => timeStr(t).slice(0, 5)];
+  if (window <= 86400) return [3 * 3600, (t) => timeStr(t).slice(0, 5)];
+  return [86400, (t) => new Date(t * 1000).toLocaleDateString([], { day: "numeric", month: "short" })];
+}
+
 function renderTrend() {
+  if (S.trendWindow > LIVE_WINDOW && S.tab === "trends" && Date.now() - (S.longHistory.loadedAt || 0) > 30000) {
+    S.longHistory.loadedAt = Date.now(); // refresh long trends every 30 s while visible
+    loadLongHistory();
+  }
   for (const pen of $$("[data-pen]")) $(".pen-val", pen).textContent = fmt(pen.dataset.pen);
   const canvas = $("#trend");
   const w = canvas.clientWidth, h = 380, dpr = window.devicePixelRatio || 1;
@@ -558,7 +640,7 @@ function renderTrend() {
 
   const pad = { l: 44, r: 12, t: 12, b: 26 };
   const pw = w - pad.l - pad.r, ph = h - pad.t - pad.b;
-  const tEnd = S.lastHistoryT || Date.now() / 1000, tStart = tEnd - S.trendWindow;
+  const tEnd = Math.max(S.lastHistoryT || 0, Date.now() / 1000 - 1), tStart = tEnd - S.trendWindow;
   const xFor = (t) => pad.l + ((t - tStart) / S.trendWindow) * pw;
   const yFor = (p) => pad.t + ph * (1 - p / 100);
 
@@ -571,19 +653,20 @@ function renderTrend() {
     ctx.beginPath(); ctx.moveTo(pad.l, y); ctx.lineTo(w - pad.r, y); ctx.stroke();
     ctx.textAlign = "right"; ctx.fillText(`${p}%`, pad.l - 6, y + 4);
   }
-  const step = S.trendWindow <= 60 ? 10 : S.trendWindow <= 300 ? 60 : 180;
+  const [step, label] = timeAxis(S.trendWindow);
+  const tz = new Date().getTimezoneOffset() * 60; // align day/hour grid lines to local time
   ctx.textAlign = "center";
-  for (let t = Math.ceil(tStart / step) * step; t <= tEnd; t += step) {
+  for (let t = Math.ceil((tStart - tz) / step) * step + tz; t <= tEnd; t += step) {
     const x = Math.round(xFor(t)) + 0.5;
     ctx.beginPath(); ctx.moveTo(x, pad.t); ctx.lineTo(x, pad.t + ph); ctx.stroke();
-    ctx.fillText(timeStr(t).slice(0, 5 + (step < 60 ? 3 : 0)), x, h - 8);
+    ctx.fillText(label(t), x, h - 8);
   }
 
   ctx.save();
   ctx.beginPath(); ctx.rect(pad.l, pad.t, pw, ph); ctx.clip();
   for (const name of S.pens) {
-    const data = S.history[name];
-    if (!data?.length) continue;
+    const data = trendData(name);
+    if (!data.length) continue;
     ctx.strokeStyle = S.tags[name].color;
     ctx.lineWidth = 2;
     ctx.setLineDash(S.tags[name].kind === "SP" ? [6, 4] : []);
@@ -608,7 +691,7 @@ function renderTrend() {
   ctx.beginPath(); ctx.moveTo(S.hoverX + 0.5, pad.t); ctx.lineTo(S.hoverX + 0.5, pad.t + ph); ctx.stroke();
   const rows = [el("div", {}, el("span", { class: "muted", text: timeStr(tHover) }))];
   for (const name of S.pens) {
-    const near = nearest(S.history[name] || [], tHover);
+    const near = nearest(trendData(name), tHover, S.trendWindow / 100);
     if (!near) continue;
     ctx.fillStyle = S.tags[name].color;
     ctx.beginPath(); ctx.arc(xFor(near[0]), yFor(pct(name, near[1])), 3.5, 0, Math.PI * 2); ctx.fill();
@@ -621,13 +704,13 @@ function renderTrend() {
   tip.style.left = left + "px";
 }
 
-function nearest(data, t) {
+function nearest(data, t, tolerance = 5) {
   let lo = 0, hi = data.length - 1;
   if (hi < 0) return null;
   while (lo < hi) { const mid = (lo + hi) >> 1; data[mid][0] < t ? (lo = mid + 1) : (hi = mid); }
   const cand = [data[lo], data[lo - 1]].filter(Boolean);
   const best = cand.sort((a, b) => Math.abs(a[0] - t) - Math.abs(b[0] - t))[0];
-  return Math.abs(best[0] - t) < 5 ? best : null;
+  return Math.abs(best[0] - t) < Math.max(5, tolerance) ? best : null;
 }
 
 /* --- alarms & events */
@@ -651,7 +734,8 @@ function renderAlarms() {
   $("#ack-all").disabled = !can("operator") || !S.alarms.some((a) => !a.acked);
 
   const filter = S.eventFilter;
-  const kinds = { alarm: ["alarm", "clear", "ack"], write: ["write", "sim"], auth: ["auth"], system: ["system"] };
+  const kinds = { alarm: ["alarm", "clear", "ack"], write: ["write", "sim"], config: ["config", "commission"],
+    auth: ["auth"], system: ["system"] };
   const events = S.events.filter((e) => !filter || kinds[filter].includes(e.kind)).slice(-300).reverse();
   const tbody = $("#event-table tbody");
   if (tbody.dataset.sig === `${filter}:${S.lastSeq}`) return; // nothing new
@@ -664,7 +748,7 @@ function renderAlarms() {
 }
 
 async function ack(id) {
-  try { await api("POST", "/api/alarms/ack", { id }); } catch (err) { toast(err.message, "error"); }
+  try { await api("POST", `${A()}/alarms/ack`, { id }); } catch (err) { toast(err.message, "error"); }
 }
 
 /* ------------------------------------------------------------- account */
@@ -677,7 +761,8 @@ function initAccount() {
   role.className = `role-tag ${me.role}`;
   $("#menu-head").replaceChildren(el("b", { text: me.full_name || me.username }),
     el("span", { text: `${me.username} · ${roleName(me.role)}` }));
-  $("#users-tab").hidden = me.role !== "engineer";
+  $("#users-tab").hidden = !hasRole("engineer");
+  $("#commission-tab").hidden = !hasRole("engineer");
   const strip = $("#readonly-strip");
   strip.hidden = me.role !== "viewer";
   strip.textContent = "You're signed in as a viewer: you can monitor everything but can't make changes.";
@@ -798,9 +883,13 @@ function drawUsers() {
   const body = $("#users-table tbody");
   body.replaceChildren(...usersCache.map((u) => {
     const self = u.username === S.me.username;
-    const roleSel = el("select", { "aria-label": `Role for ${u.username}`, disabled: self,
-      title: self ? "You can't change your own role" : "" },
-    ...ROLE_ORDER.map((r) => el("option", { value: r, text: roleName(r), selected: r === u.role })));
+    // You can only manage accounts at or below your own role, and only grant those roles.
+    const locked = !hasRole(u.role);
+    const lockTitle = locked ? `Only an ${u.role} can change this account` : "";
+    const roleSel = el("select", { "aria-label": `Role for ${u.username}`, disabled: self || locked,
+      title: self ? "You can't change your own role" : lockTitle },
+    ...ROLE_ORDER.filter((r) => hasRole(r) || r === u.role)
+      .map((r) => el("option", { value: r, text: roleName(r), selected: r === u.role })));
     roleSel.onchange = async () => {
       const ok = await confirmChange(`Change role for ${u.username}?`,
         `<span class="change">${esc(roleName(u.role))} → ${esc(roleName(roleSel.value))}</span><br>` +
@@ -812,8 +901,9 @@ function drawUsers() {
       : u.must_change_password ? el("span", { class: "status-tag pending", text: "Password change pending" })
         : el("span", { class: "status-tag", text: "Active" });
     const actions = el("td", { class: "actions" },
-      el("button", { class: "btn small", text: "Reset password", onclick: () => openUserDialog(u) }),
-      el("button", { class: "btn small", text: u.disabled ? "Enable" : "Disable", disabled: self,
+      el("button", { class: "btn small", text: "Reset password", disabled: locked, title: lockTitle,
+        onclick: () => openUserDialog(u) }),
+      el("button", { class: "btn small", text: u.disabled ? "Enable" : "Disable", disabled: self || locked,
         onclick: async () => {
           const verb = u.disabled ? "Enable" : "Disable";
           if (!(await confirmChange(`${verb} ${u.username}?`, u.disabled
@@ -821,7 +911,7 @@ function drawUsers() {
             : "They will be signed out immediately and won't be able to sign in."))) return;
           await userAction("PATCH", u.username, { disabled: !u.disabled }, `${u.username} ${verb.toLowerCase()}d`);
         } }),
-      el("button", { class: "btn small danger", text: "Delete", disabled: self,
+      el("button", { class: "btn small danger", text: "Delete", disabled: self || locked,
         onclick: async () => {
           if (!(await confirmChange(`Delete ${u.username}?`,
             "This removes the account permanently. Their past actions stay in the event journal."))) return;
@@ -868,6 +958,9 @@ function openUserDialog(existing) {
 
 function initUserAdmin() {
   const dlg = $("#user-dialog");
+  if (hasRole("integrator")) {
+    $("#ud-role").append(el("option", { value: "integrator", text: "Integrator – commissioning & configuration" }));
+  }
   $("#add-user-btn").onclick = () => openUserDialog(null);
   $("#ud-cancel").onclick = () => dlg.close();
   $("#ud-generate").onclick = () => { $("#ud-password").value = randomPassword(); };
@@ -894,6 +987,44 @@ function initUserAdmin() {
     dlg.close();
     refreshUsers();
   });
+}
+
+/* -------------------------------------------------------- site & assets */
+function pickAsset() {
+  const ids = S.site.assets.map((a) => a.id);
+  const fromUrl = new URLSearchParams(location.search).get("asset");
+  let saved = null;
+  try { saved = localStorage.getItem("hmi-asset"); } catch { /* ignore */ }
+  const id = [fromUrl, saved, ids[0]].find((x) => x && ids.includes(x)) || null;
+  try { if (id) localStorage.setItem("hmi-asset", id); } catch { /* ignore */ }
+  return id;
+}
+
+function renderSiteHeader() {
+  const asset = S.site.assets.find((a) => a.id === S.assetId);
+  const where = [S.site.client?.name, S.site.site?.name].filter(Boolean).join(" · ");
+  $("#plant-name").textContent = asset?.name || "Plant HMI";
+  $("#plant-desc").textContent = where || asset?.description || "";
+  document.title = `${asset?.name || "Plant"} · HMI`;
+  const picker = $("#asset-picker");
+  picker.hidden = S.site.assets.length < 2;
+  picker.replaceChildren(...S.site.assets.map((a) => el("option", {
+    value: a.id, selected: a.id === S.assetId,
+    text: `${a.name}${a.alarms_unacked ? `  (${a.alarms_unacked} alarm${a.alarms_unacked > 1 ? "s" : ""})` : ""}`,
+  })));
+  picker.onchange = () => {
+    const url = new URL(location.href);
+    url.searchParams.set("asset", picker.value);
+    location.assign(url); // a fresh load keeps every view consistent with the new asset
+  };
+}
+
+// Other assets' alarm counts in the picker stay current.
+async function refreshSite() {
+  try {
+    S.site = await api("GET", "/api/site");
+    if (S.site.assets.length > 1) renderSiteHeader();
+  } catch { /* transient */ }
 }
 
 /* ------------------------------------------------------------- startup */
@@ -923,14 +1054,16 @@ async function init() {
   setInterval(() => { $("#clock").textContent = new Date().toLocaleTimeString([], { hour12: false }); }, 1000);
   S.me = await api("GET", "/api/me");
   initAccount();
-  S.config = await api("GET", "/api/config");
+  S.site = await api("GET", "/api/site");
+  S.assetId = pickAsset();
+  if (!S.assetId) { toast("No assets are configured on this device yet.", "error"); return; }
+  S.config = await api("GET", `${A()}/config`);
   for (const t of S.config.tags) S.tags[t.name] = t;
-  $("#plant-name").textContent = S.config.plant.name || "Plant HMI";
-  $("#plant-desc").textContent = S.config.plant.description || "";
-  document.title = `${S.config.plant.name || "Plant"} · HMI`;
+  renderSiteHeader();
+  if (!isDemoScreen()) S.pens = new Set(kpiTags().slice(0, 4));
   S.pens = new Set([...S.pens].filter((n) => S.tags[n]));
 
-  const hist = await api("GET", "/api/history");
+  const hist = await api("GET", `${A()}/history`);
   for (const [name, points] of Object.entries(hist)) S.history[name] = points;
   S.lastHistoryT = Math.max(0, ...Object.values(hist).map((p) => (p.length ? p[p.length - 1][0] : 0)));
 
@@ -938,7 +1071,7 @@ async function init() {
   buildSetpoints();
   buildTrendPicker();
   initValueDialog();
-  if (S.me.role === "engineer") initUserAdmin();
+  if (hasRole("engineer")) { initUserAdmin(); initCommissioning(); }
 
   for (const b of $$(".tabs button")) b.onclick = () => selectTab(b.dataset.tab);
   for (const b of $$("[data-goto]")) b.onclick = () => selectTab(b.dataset.goto);
@@ -955,6 +1088,10 @@ async function init() {
   const fromHash = location.hash.slice(1);
   selectTab($(`.tabs [data-tab="${fromHash}"]`) ? fromHash : "overview");
   connect();
+  setInterval(refreshSite, 15000);
+  let flash = null;
+  try { flash = sessionStorage.getItem("hmi-flash"); sessionStorage.removeItem("hmi-flash"); } catch { /* ignore */ }
+  if (flash) toast(flash);
 }
 
 init().catch((err) => toast(`Failed to load HMI: ${err.message}`, "error"));

@@ -39,12 +39,24 @@ class Alarm:
 
 
 class EventLog:
-    def __init__(self, size: int = 500):
+    """Journal of alarms, operator actions and system events.
+
+    With a ``store`` the journal is persisted in the device database and
+    survives restarts; the most recent entries are cached in memory.
+    """
+
+    def __init__(self, size: int = 500, store=None):
+        self.store = store
         self._events: deque[dict[str, Any]] = deque(maxlen=size)
         self._seq = itertools.count(1)
+        if store is not None:
+            self._events.extend(store.recent_events(size))
 
     def add(self, kind: str, message: str, **extra: Any) -> dict[str, Any]:
-        event = {"seq": next(self._seq), "t": time.time(), "kind": kind, "message": message, **extra}
+        extra = {k: v for k, v in extra.items() if v is not None}
+        t = time.time()
+        seq = self.store.add_event(t, kind, message, extra) if self.store is not None else next(self._seq)
+        event = {"seq": seq, "t": t, "kind": kind, "message": message, **extra}
         self._events.append(event)
         return event
 
@@ -56,9 +68,10 @@ class EventLog:
 
 
 class AlarmManager:
-    def __init__(self, db: TagDatabase, events: EventLog):
+    def __init__(self, db: TagDatabase, events: EventLog, asset_id: str | None = None):
         self.db = db
         self.events = events
+        self.asset_id = asset_id
         self.alarms: dict[str, Alarm] = {}
         for tag in db.tags.values():
             if not tag.alarm:
@@ -106,11 +119,11 @@ class AlarmManager:
             if should_be_active and not alarm.active:
                 alarm.active, alarm.acked = True, False
                 alarm.raised_at, alarm.cleared_at = now, None
-                self.events.add("alarm", alarm.message, alarm=alarm.id, priority=alarm.priority,
+                self.events.add("alarm", alarm.message, alarm=alarm.id, asset=self.asset_id, priority=alarm.priority,
                                 tag=alarm.tag, value=value)
             elif not should_be_active and alarm.active:
                 alarm.active, alarm.cleared_at = False, now
-                self.events.add("clear", f"{alarm.message} returned to normal", alarm=alarm.id,
+                self.events.add("clear", f"{alarm.message} returned to normal", alarm=alarm.id, asset=self.asset_id,
                                 tag=alarm.tag, value=value)
 
     def acknowledge(self, alarm_id: str | None, user: str) -> int:
@@ -121,7 +134,8 @@ class AlarmManager:
             if not alarm.acked:
                 alarm.acked = True
                 count += 1
-                self.events.add("ack", f"{alarm.message} acknowledged", alarm=alarm.id, user=user)
+                self.events.add("ack", f"{alarm.message} acknowledged", alarm=alarm.id,
+                                asset=self.asset_id, user=user)
         return count
 
     def visible(self) -> list[dict[str, Any]]:

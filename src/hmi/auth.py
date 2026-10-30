@@ -1,30 +1,30 @@
 """User accounts, password hashing, sessions and role checks.
 
-Roles are ordered: ``viewer`` < ``operator`` < ``engineer``.
+Roles are ordered: ``viewer`` < ``operator`` < ``engineer`` < ``integrator``.
 
-* viewer   – read-only access to every screen
-* operator – change setpoints and outputs, switch auto/manual, acknowledge alarms
-* engineer – everything, plus tags marked ``"role": "engineer"`` (alarm limits,
-             tuning), simulator input forcing and user management
+* viewer     – read-only access to every screen
+* operator   – change setpoints and outputs, switch auto/manual, acknowledge alarms
+* engineer   – everything, plus tags marked ``"role": "engineer"`` (alarm limits,
+               tuning), simulator input forcing, I/O check sign-off and user management
+* integrator – your own technicians: everything, plus PLC connection settings,
+               on-site I/O edits and loading configuration packages
 
-Accounts are stored in a JSON file with scrypt password hashes. Sessions live
-in memory, so restarting the server signs everybody out.
+Accounts live in the device database (scrypt password hashes) and normally
+arrive in the configuration package from the cloud. Sessions live in memory,
+so restarting the server signs everybody out.
 """
 
 from __future__ import annotations
 
 import hashlib
 import hmac
-import json
-import os
 import re
 import secrets
 import threading
 import time
 from dataclasses import asdict, dataclass
-from pathlib import Path
-
-ROLES = ("viewer", "operator", "engineer")
+from .store import Store
+from .tags import ROLES
 USERNAME_RE = re.compile(r"^[a-z0-9_.-]{2,32}$")
 MIN_PASSWORD = 8
 
@@ -88,41 +88,38 @@ class Session:
 
 
 class UserStore:
-    """Accounts persisted to a JSON file (written atomically)."""
+    """Accounts held in the device database, cached in memory."""
 
-    def __init__(self, path: str | Path):
-        self.path = Path(path)
+    ADMIN_ROLES = ("engineer", "integrator")  # roles that can manage users
+
+    def __init__(self, store: Store):
+        self.store = store
         self._lock = threading.Lock()
         self.users: dict[str, User] = {}
-        self._mtime: float | None = None
-        self.reload_if_changed()
+        self._version = None
+        self.reload()
 
     def reload_if_changed(self) -> None:
-        """Pick up edits made by the command-line tool while the server runs."""
-        try:
-            mtime = self.path.stat().st_mtime
-        except FileNotFoundError:
-            return
-        if mtime != self._mtime:
-            raw = json.loads(self.path.read_text(encoding="utf-8"))
-            self.users = {u["username"]: User(**u) for u in raw.get("users", [])}
-            self._mtime = mtime
+        """Pick up account edits made through another connection (the command-line tool)."""
+        if self.store.data_version() != self._version:
+            self.reload()
 
-    def save(self) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = self.path.with_suffix(".tmp")
-        tmp.write_text(json.dumps({"users": [asdict(u) for u in self.users.values()]}, indent=2),
-                       encoding="utf-8")
-        os.chmod(tmp, 0o600)
-        tmp.replace(self.path)
-        self._mtime = self.path.stat().st_mtime
+    def reload(self) -> None:
+        """Re-read accounts, e.g. after a configuration package replaced them."""
+        self._version = self.store.data_version()
+        known = set(User.__dataclass_fields__)
+        self.users = {u["username"]: User(**{k: v for k, v in u.items() if k in known})
+                      for u in self.store.users()}
+
+    def _save(self, user: User) -> None:
+        self.store.save_user(asdict(user))
 
     def bootstrap(self) -> str | None:
-        """Create an initial engineer account if there are no users. Returns its password."""
+        """Create an initial integrator account if there are no users. Returns its password."""
         if self.users:
             return None
         password = secrets.token_urlsafe(9)
-        self.add("admin", password, "engineer", full_name="Administrator", must_change_password=True)
+        self.add("admin", password, "integrator", full_name="Administrator", must_change_password=True)
         return password
 
     # -- account management ---------------------------------------------------
@@ -139,7 +136,7 @@ class UserStore:
             user = User(username, role, hash_password(password), full_name.strip(),
                         must_change_password, created_at=time.time())
             self.users[username] = user
-            self.save()
+            self._save(user)
         return user
 
     def update(self, username: str, *, role: str | None = None, full_name: str | None = None,
@@ -147,10 +144,10 @@ class UserStore:
         user = self.get(username)
         if role is not None:
             self._check_role(role)
-            if user.role == "engineer" and role != "engineer":
-                self._ensure_other_engineer(username)
-        if disabled and user.role == "engineer":
-            self._ensure_other_engineer(username)
+            if user.role in self.ADMIN_ROLES and role not in self.ADMIN_ROLES:
+                self._ensure_other_admin(username)
+        if disabled and user.role in self.ADMIN_ROLES:
+            self._ensure_other_admin(username)
         if password is not None:
             self._check_password(password)
         with self._lock:
@@ -160,19 +157,19 @@ class UserStore:
                 user.full_name = full_name.strip()
             if disabled is not None:
                 user.disabled = disabled
-            if password is not None:  # set by an engineer: user must pick their own next login
+            if password is not None:  # set by an admin: user must pick their own next login
                 user.password_hash = hash_password(password)
                 user.must_change_password = True
-            self.save()
+            self._save(user)
         return user
 
     def delete(self, username: str) -> None:
         user = self.get(username)
-        if user.role == "engineer":
-            self._ensure_other_engineer(username)
+        if user.role in self.ADMIN_ROLES:
+            self._ensure_other_admin(username)
         with self._lock:
             del self.users[username]
-            self.save()
+            self.store.delete_user(username)
 
     def change_own_password(self, username: str, current: str, new: str) -> None:
         user = self.get(username)
@@ -184,7 +181,7 @@ class UserStore:
         with self._lock:
             user.password_hash = hash_password(new)
             user.must_change_password = False
-            self.save()
+            self._save(user)
 
     def get(self, username: str) -> User:
         self.reload_if_changed()
@@ -203,7 +200,7 @@ class UserStore:
             return None
         with self._lock:
             user.last_login = time.time()
-            self.save()
+            self._save(user)
         return user
 
     @staticmethod
@@ -216,11 +213,11 @@ class UserStore:
         if len(password) < MIN_PASSWORD:
             raise AuthError(f"Password must be at least {MIN_PASSWORD} characters")
 
-    def _ensure_other_engineer(self, username: str) -> None:
+    def _ensure_other_admin(self, username: str) -> None:
         others = [u for u in self.users.values()
-                  if u.role == "engineer" and not u.disabled and u.username != username]
+                  if u.role in self.ADMIN_ROLES and not u.disabled and u.username != username]
         if not others:
-            raise AuthError("At least one active engineer account is required")
+            raise AuthError("At least one active engineer or integrator account is required")
 
 
 class SessionManager:

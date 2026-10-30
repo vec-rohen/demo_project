@@ -13,4 +13,11 @@ def create_driver(kind: str, db, **options) -> Driver:
     raise ValueError(f"unknown driver {kind!r} (expected 'sim' or 'modbus')")
 
 
-__all__ = ["Driver", "Value", "SimulatorDriver", "create_driver"]
+def driver_for_plc(plc: dict, db) -> Driver:
+    """Build the driver described by an asset's ``plc`` connection block."""
+    if plc["protocol"] == "modbus":
+        return create_driver("modbus", db, host=plc["host"], port=plc.get("port", 502), unit=plc.get("unit", 1))
+    return create_driver(plc["protocol"], db)
+
+
+__all__ = ["Driver", "Value", "SimulatorDriver", "create_driver", "driver_for_plc"]

@@ -35,10 +35,11 @@ def _to_signed(raw: int) -> int:
 class ModbusDriver(Driver):
     def __init__(self, db: TagDatabase, host: str = "127.0.0.1", port: int = 502, unit: int = 1):
         super().__init__(db)
-        self.unit = unit
+        self.host, self.port, self.unit = host, port, unit
         self.client = AsyncModbusTcpClient(host, port=port, timeout=2)
         self.mapped: list[Tag] = [t for t in db.tags.values() if t.modbus]
         self._last: dict[str, Value] = {}
+        self.errors: list[str] = []   # problems from the most recent poll, for the connection test
 
     async def start(self) -> None:
         self.connected = await self.client.connect()
@@ -50,17 +51,21 @@ class ModbusDriver(Driver):
         self.connected = False
 
     async def read_all(self) -> dict[str, Value]:
+        self.errors = []
         if not self.client.connected:
             self.connected = await self.client.connect()
             if not self.connected:
+                self.errors.append(f"Can't connect to {self.host}:{self.port} (no response or connection refused)")
                 return dict(self._last)
-        try:
-            for table, tags in self._by_table().items():
+        ok = True
+        for table, tags in self._by_table().items():
+            try:
                 await self._read_table(table, tags)
-            self.connected = True
-        except Exception as exc:  # noqa: BLE001 - keep polling on any comms fault
-            log.warning("Modbus read failed: %s", exc)
-            self.connected = False
+            except Exception as exc:  # noqa: BLE001 - keep polling on any comms fault
+                log.warning("Modbus read failed: %s", exc)
+                self.errors.append(str(exc))
+                ok = False
+        self.connected = ok and self.client.connected
         return dict(self._last)
 
     def _by_table(self) -> dict[str, list[Tag]]:
@@ -76,7 +81,8 @@ class ModbusDriver(Driver):
         fn = getattr(self.client, READ_FN[table])
         result = await fn(start, count=end - start + 1, device_id=self.unit)
         if result.isError():
-            raise IOError(f"{table} read {start}..{end}: {result}")
+            names = ", ".join(t.name for t in tags)
+            raise IOError(f"{table} registers {start}–{end} ({names}): PLC returned {result}")
         for tag in tags:
             offset = tag.modbus["address"] - start
             if table in ("coil", "discrete"):

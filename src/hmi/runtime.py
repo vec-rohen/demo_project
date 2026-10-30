@@ -1,4 +1,10 @@
-"""Polls the driver, runs alarms, keeps trend history and fans updates out to browsers."""
+"""Runs one asset: polls its PLC driver, evaluates alarms, records trend history
+and fans live updates out to browsers.
+
+A device runs one Runtime per asset (see ``site.py``). Trend data is kept in
+memory for the last 15 minutes at 1 s resolution, and written to the device
+database on change (with a deadband) plus a heartbeat, for longer trends.
+"""
 
 from __future__ import annotations
 
@@ -19,6 +25,11 @@ class WriteRejected(Exception):
     """A write was well-formed but is not allowed in the current plant state."""
 
 
+HISTORY_HEARTBEAT_S = 60.0   # store a point at least this often, even if unchanged
+HISTORY_DEADBAND = 0.005     # ...or when it moves more than 0.5 % of its span
+HISTORY_FLUSH_S = 5.0
+
+
 class Runtime:
     def __init__(
         self,
@@ -27,28 +38,37 @@ class Runtime:
         poll_interval: float = 0.25,
         history_interval: float = 1.0,
         history_points: int = 900,
+        asset_id: str = "default",
+        events: EventLog | None = None,
+        store=None,
     ):
         self.db = db
         self.driver = driver
+        self.asset_id = asset_id
+        self.store = store
         self.poll_interval = poll_interval
         self.history_interval = history_interval
-        self.events = EventLog()
-        self.alarms = AlarmManager(db, self.events)
+        self.events = events if events is not None else EventLog()
+        self.alarms = AlarmManager(db, self.events, asset_id)
         self.values: dict[str, Value] = {}
         self.updated_at: float = 0.0
         self.history: dict[str, deque[tuple[float, float]]] = {
             t.name: deque(maxlen=history_points) for t in db.analog()
         }
         self._last_history = 0.0
+        self._stored: dict[str, tuple[float, float]] = {}   # tag -> (t, v) last written to the store
+        self._pending_rows: list[tuple[str, str, float, float]] = []
+        self._last_flush = time.time()
         self._subscribers: set[asyncio.Queue] = set()
         self._task: asyncio.Task | None = None
         self._last_event_seq = 0
 
     async def start(self) -> None:
+        self._seed_history()
         await self.driver.start()
-        self.events.add("system", f"HMI started ({type(self.driver).__name__})")
+        self._event("system", f"{self.db.plant.get('name', self.asset_id)} started ({type(self.driver).__name__})")
         await self.poll_once()
-        self._task = asyncio.create_task(self._run(), name="hmi-poll")
+        self._task = asyncio.create_task(self._run(), name=f"poll-{self.asset_id}")
 
     async def stop(self) -> None:
         if self._task:
@@ -58,6 +78,18 @@ class Runtime:
             except asyncio.CancelledError:
                 pass
         await self.driver.stop()
+        self._flush_history(force=True)
+
+    def _event(self, kind: str, message: str, **extra: Any) -> dict[str, Any]:
+        return self.events.add(kind, message, asset=self.asset_id, **extra)
+
+    def _seed_history(self) -> None:
+        """After a restart or reload, fill the live trend buffers from the database."""
+        if self.store is None:
+            return
+        for name, buf in self.history.items():
+            since = time.time() - self.history_interval * buf.maxlen
+            buf.extend(self.store.history(self.asset_id, name, since, max_points=buf.maxlen))
 
     async def _run(self) -> None:
         while True:
@@ -73,15 +105,45 @@ class Runtime:
         now = time.time()
         self.updated_at = now
         if was_connected != self.driver.connected:
-            self.events.add("system", "PLC connection restored" if self.driver.connected
-                            else "PLC connection lost")
+            self._event("system", "PLC connection restored" if self.driver.connected
+                        else "PLC connection lost")
         self.alarms.evaluate(self.values, now)
         if now - self._last_history >= self.history_interval:
             self._last_history = now
             for name, buf in self.history.items():
                 if name in self.values:
-                    buf.append((round(now, 3), float(self.values[name])))
+                    value = float(self.values[name])
+                    buf.append((round(now, 3), value))
+                    self._maybe_store(name, now, value)
+            self._flush_history()
         self._broadcast(self.snapshot(include_events_since=self._last_event_seq))
+
+    def _maybe_store(self, name: str, now: float, value: float) -> None:
+        if self.store is None:
+            return
+        last = self._stored.get(name)
+        tag = self.db.tags[name]
+        span = (tag.max - tag.min) if tag.min is not None and tag.max is not None else 0.0
+        if last is None or now - last[0] >= HISTORY_HEARTBEAT_S or abs(value - last[1]) > span * HISTORY_DEADBAND:
+            self._stored[name] = (now, value)
+            self._pending_rows.append((self.asset_id, name, round(now, 3), value))
+
+    def _flush_history(self, force: bool = False) -> None:
+        if self.store is None or not self._pending_rows:
+            return
+        if force or time.time() - self._last_flush >= HISTORY_FLUSH_S:
+            rows, self._pending_rows = self._pending_rows, []
+            self._last_flush = time.time()
+            self.store.add_history(rows)
+
+    def trend(self, name: str, seconds: float) -> list[tuple[float, float]]:
+        """Trend points for the last ``seconds``: memory for short windows, database for long ones."""
+        buf = self.history[name]
+        cutoff = time.time() - seconds
+        if self.store is None or (buf and buf[0][0] <= cutoff):
+            return [p for p in buf if p[0] >= cutoff]
+        self._flush_history(force=True)
+        return self.store.history(self.asset_id, name, cutoff)
 
     # -- browser-facing state -------------------------------------------------
     def snapshot(self, include_events_since: int | None = None) -> dict[str, Any]:
@@ -90,6 +152,7 @@ class Runtime:
             self._last_event_seq = max(self._last_event_seq, events[-1]["seq"])
         return {
             "type": "update",
+            "asset": self.asset_id,
             "t": self.updated_at,
             "connected": self.driver.connected,
             "values": self.values,
@@ -125,8 +188,8 @@ class Runtime:
         old = self.values.get(name)
         await self.driver.write(name, value)
         self.values[name] = value
-        self.events.add("write", f"{tag.description}: {self._fmt(tag, old)} → {self._fmt(tag, value)}",
-                        tag=name, old=old, new=value, user=user)
+        self._event("write", f"{tag.description}: {self._fmt(tag, old)} → {self._fmt(tag, value)}",
+                    tag=name, old=old, new=value, user=user)
         return value
 
     async def simulate_input(self, name: str, raw_value: Any, user: str) -> Value:
@@ -138,7 +201,7 @@ class Runtime:
         value = tag.coerce(raw_value)
         await self.driver.simulate_input(name, value)
         self.values[name] = value
-        self.events.add("sim", f"Simulated {tag.description} = {self._fmt(tag, value)}", tag=name, user=user)
+        self._event("sim", f"Simulated {tag.description} = {self._fmt(tag, value)}", tag=name, user=user)
         return value
 
     @staticmethod

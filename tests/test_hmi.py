@@ -7,9 +7,11 @@ from fastapi.testclient import TestClient
 
 from src.hmi.alarms import AlarmManager, EventLog
 from src.hmi.auth import AuthError, SessionManager, UserStore, hash_password, verify_password
-from src.hmi.drivers import SimulatorDriver
-from src.hmi.runtime import Runtime
+from src.hmi.drivers import SimulatorDriver, driver_for_plc
+from src.hmi.package import PackageError, apply_package, demo_package, export_package
 from src.hmi.server import create_app
+from src.hmi.site import SiteManager
+from src.hmi.store import Store
 from src.hmi.tags import TagDatabase, TagError
 
 TAGS = Path(__file__).resolve().parents[1] / "src" / "hmi" / "tags.json"
@@ -23,12 +25,34 @@ def db():
 PASSWORD = "correct-horse"
 
 
+ASSET = "SKID-01"
+A = f"/api/assets/{ASSET}"
+
+
+def sim_factory(plc, db):
+    """Seeded simulator for 'sim' assets so tests are repeatable."""
+    return SimulatorDriver(db, seed=1) if plc["protocol"] == "sim" else driver_for_plc(plc, db)
+
+
 @pytest.fixture
-def store(tmp_path):
-    store = UserStore(tmp_path / "users.json")
-    for name, role in (("eng", "engineer"), ("op", "operator"), ("view", "viewer")):
-        store.add(name, PASSWORD, role, must_change_password=False)
+def edge(tmp_path):
+    """A device database loaded with the demo package."""
+    store = Store(tmp_path / "edge.db")
+    apply_package(store, demo_package(), "test")
     return store
+
+
+@pytest.fixture
+def store(edge):
+    """User accounts on the device."""
+    users = UserStore(edge)
+    for name, role in (("eng", "engineer"), ("op", "operator"), ("view", "viewer"), ("integ", "integrator")):
+        users.add(name, PASSWORD, role, must_change_password=False)
+    return users
+
+
+def make_app(edge):
+    return create_app(edge, site=SiteManager(edge, driver_factory=sim_factory, poll_interval=0.05))
 
 
 def login(client, username, password=PASSWORD):
@@ -36,10 +60,9 @@ def login(client, username, password=PASSWORD):
 
 
 @pytest.fixture
-def anon(db, store):
+def anon(edge, store):
     """A client that has not signed in."""
-    runtime = Runtime(db, SimulatorDriver(db, seed=1), poll_interval=0.05)
-    with TestClient(create_app(runtime, users=store)) as c:
+    with TestClient(make_app(edge)) as c:
         yield c
 
 
@@ -120,54 +143,54 @@ def test_low_alarm_clears_above_limit_plus_deadband(db):
 
 
 def test_api_config_and_state(client):
-    cfg = client.get("/api/config").json()
+    cfg = client.get(f"{A}/config").json()
     names = {t["name"] for t in cfg["tags"]}
     assert {"AI_TankLevel", "SP_LevelTarget", "DO_PumpRun"} <= names
     assert "modbus" not in cfg["tags"][0]
-    state = client.get("/api/state").json()
+    state = client.get(f"{A}/state").json()
     assert state["connected"] is True
     assert "AI_TankLevel" in state["values"]
 
 
 def test_write_setpoint_and_journal(client):
-    r = client.post("/api/tags/SP_LevelTarget", json={"value": 70}, headers={"X-Operator": "spoofed"})
+    r = client.post(f"{A}/tags/SP_LevelTarget", json={"value": 70}, headers={"X-Operator": "spoofed"})
     assert r.status_code == 200 and r.json()["value"] == 70
-    assert client.get("/api/state").json()["values"]["SP_LevelTarget"] == 70
-    events = client.get("/api/state").json()["events"]
+    assert client.get(f"{A}/state").json()["values"]["SP_LevelTarget"] == 70
+    events = client.get(f"{A}/state").json()["events"]
     assert any(e["kind"] == "write" and e["user"] == "eng" for e in events)  # header is ignored
 
 
 def test_write_rejections(client):
-    assert client.post("/api/tags/SP_LevelTarget", json={"value": 500}).status_code == 422
-    assert client.post("/api/tags/AI_TankLevel", json={"value": 5}).status_code == 409
-    assert client.post("/api/tags/NOPE", json={"value": 5}).status_code == 404
+    assert client.post(f"{A}/tags/SP_LevelTarget", json={"value": 500}).status_code == 422
+    assert client.post(f"{A}/tags/AI_TankLevel", json={"value": 5}).status_code == 409
+    assert client.post(f"{A}/tags/NOPE", json={"value": 5}).status_code == 404
     # Manual-only outputs are locked while in automatic mode.
-    assert client.post("/api/tags/DO_PumpRun", json={"value": True}).status_code == 409
-    assert client.post("/api/tags/SP_AutoMode", json={"value": False}).status_code == 200
-    assert client.post("/api/tags/DO_PumpRun", json={"value": True}).status_code == 200
+    assert client.post(f"{A}/tags/DO_PumpRun", json={"value": True}).status_code == 409
+    assert client.post(f"{A}/tags/SP_AutoMode", json={"value": False}).status_code == 200
+    assert client.post(f"{A}/tags/DO_PumpRun", json={"value": True}).status_code == 200
 
 
 def test_simulated_input_and_ack(client):
-    assert client.post("/api/simulate/DI_EStopOK", json={"value": False}).status_code == 200
-    assert client.post("/api/simulate/AI_TankLevel", json={"value": 1}).status_code == 422
+    assert client.post(f"{A}/simulate/DI_EStopOK", json={"value": False}).status_code == 200
+    assert client.post(f"{A}/simulate/AI_TankLevel", json={"value": 1}).status_code == 422
     time.sleep(0.2)
-    alarms = client.get("/api/state").json()["alarms"]
+    alarms = client.get(f"{A}/state").json()["alarms"]
     assert any(a["id"] == "DI_EStopOK.state" and a["active"] for a in alarms)
-    assert client.post("/api/alarms/ack", json={"id": "DI_EStopOK.state"}).json()["acknowledged"] == 1
-    assert client.post("/api/alarms/ack", json={"id": "bogus"}).status_code == 404
+    assert client.post(f"{A}/alarms/ack", json={"id": "DI_EStopOK.state"}).json()["acknowledged"] == 1
+    assert client.post(f"{A}/alarms/ack", json={"id": "bogus"}).status_code == 404
 
 
 def test_websocket_streams_updates(client):
-    with client.websocket_connect("/ws") as ws:
+    with client.websocket_connect(f"/ws/{ASSET}") as ws:
         first = ws.receive_json()
         assert first["type"] == "update" and "AI_TankLevel" in first["values"]
         assert ws.receive_json()["t"] >= first["t"]
 
 
 def test_history_endpoint(client):
-    hist = client.get("/api/history?tags=AI_TankLevel").json()
+    hist = client.get(f"{A}/history?tags=AI_TankLevel").json()
     assert len(hist["AI_TankLevel"]) >= 1
-    assert client.get("/api/history?tags=DI_EStopOK").status_code == 404
+    assert client.get(f"{A}/history?tags=DI_EStopOK").status_code == 404
 
 
 def test_modbus_driver_against_local_server(db):
@@ -222,15 +245,15 @@ def test_password_hashing():
 
 
 def test_bootstrap_creates_admin_once(tmp_path):
-    store = UserStore(tmp_path / "u.json")
+    store = UserStore(Store(tmp_path / "u.db"))
     password = store.bootstrap()
-    assert password and store.users["admin"].role == "engineer"
+    assert password and store.users["admin"].role == "integrator"
     assert store.users["admin"].must_change_password
-    assert UserStore(tmp_path / "u.json").bootstrap() is None  # persisted
+    assert UserStore(Store(tmp_path / "u.db")).bootstrap() is None  # persisted
 
 
 def test_last_engineer_is_protected(tmp_path):
-    store = UserStore(tmp_path / "u.json")
+    store = UserStore(Store(tmp_path / "u.db"))
     store.add("boss", PASSWORD, "engineer")
     with pytest.raises(AuthError):
         store.update("boss", role="operator")
@@ -258,13 +281,13 @@ def test_idle_timeout_expires_session(store):
 
 
 def test_requires_sign_in(anon):
-    assert anon.get("/api/state").status_code == 401
-    assert anon.post("/api/tags/SP_LevelTarget", json={"value": 50}).status_code == 401
+    assert anon.get(f"{A}/state").status_code == 401
+    assert anon.post(f"{A}/tags/SP_LevelTarget", json={"value": 50}).status_code == 401
     r = anon.get("/", follow_redirects=False)
     assert r.status_code == 303 and r.headers["location"] == "/login"
     assert anon.get("/login").status_code == 200
     with pytest.raises(Exception):
-        with anon.websocket_connect("/ws") as ws:
+        with anon.websocket_connect(f"/ws/{ASSET}") as ws:
             ws.receive_json()
 
 
@@ -282,39 +305,40 @@ def test_login_logout_flow(anon):
 
 
 def test_non_json_posts_rejected(client):
-    r = client.post("/api/tags/SP_LevelTarget", content="value=50",
+    r = client.post(f"{A}/tags/SP_LevelTarget", content="value=50",
                     headers={"Content-Type": "application/x-www-form-urlencoded"})
     assert r.status_code == 415
 
 
 def test_viewer_is_read_only(anon):
     login(anon, "view")
-    assert anon.get("/api/state").status_code == 200
-    assert anon.post("/api/tags/SP_LevelTarget", json={"value": 50}).status_code == 403
-    assert anon.post("/api/alarms/ack", json={}).status_code == 403
+    assert anon.get(f"{A}/state").status_code == 200
+    assert anon.post(f"{A}/tags/SP_LevelTarget", json={"value": 50}).status_code == 403
+    assert anon.post(f"{A}/alarms/ack", json={}).status_code == 403
     assert anon.get("/api/users").status_code == 403
 
 
 def test_operator_limits(anon):
     login(anon, "op")
-    assert anon.post("/api/tags/SP_LevelTarget", json={"value": 50}).status_code == 200
-    assert anon.post("/api/alarms/ack", json={}).status_code == 200
+    assert anon.post(f"{A}/tags/SP_LevelTarget", json={"value": 50}).status_code == 200
+    assert anon.post(f"{A}/alarms/ack", json={}).status_code == 200
     # Alarm limits, tuning and simulator forcing are engineer-only.
-    assert anon.post("/api/tags/SP_LevelHiAlarm", json={"value": 80}).status_code == 403
-    assert anon.post("/api/tags/SP_LevelKp", json={"value": 3}).status_code == 403
-    assert anon.post("/api/simulate/DI_DoorClosed", json={"value": False}).status_code == 403
+    assert anon.post(f"{A}/tags/SP_LevelHiAlarm", json={"value": 80}).status_code == 403
+    assert anon.post(f"{A}/tags/SP_LevelKp", json={"value": 3}).status_code == 403
+    assert anon.post(f"{A}/simulate/DI_DoorClosed", json={"value": False}).status_code == 403
     assert anon.get("/api/users").status_code == 403
 
 
-def test_forced_password_change(anon, store):
-    store.update("op", password="temporary-1")  # admin reset -> must change
+def test_forced_password_change(anon, edge):
+    # Reset from the command-line tool (its own database connection) while the server runs.
+    UserStore(Store(edge.path)).update("op", password="temporary-1")
     login(anon, "op", "temporary-1")
     assert anon.get("/api/me").json()["must_change_password"] is True
-    assert anon.post("/api/tags/SP_LevelTarget", json={"value": 50}).status_code == 403
+    assert anon.post(f"{A}/tags/SP_LevelTarget", json={"value": 50}).status_code == 403
     r = anon.post("/api/me/password", json={"current": "wrong", "new": "brand-new-pass"})
     assert r.status_code == 422
     assert anon.post("/api/me/password", json={"current": "temporary-1", "new": "brand-new-pass"}).status_code == 200
-    assert anon.post("/api/tags/SP_LevelTarget", json={"value": 50}).status_code == 200
+    assert anon.post(f"{A}/tags/SP_LevelTarget", json={"value": 50}).status_code == 200
 
 
 def test_user_admin(client):
@@ -326,15 +350,14 @@ def test_user_admin(client):
     assert client.patch("/api/users/eng", json={"role": "viewer"}).status_code == 422  # not yourself
     assert client.delete("/api/users/eng").status_code == 422
     assert client.delete("/api/users/nobody").status_code == 404
-    assert [u["username"] for u in client.get("/api/users").json()] == ["bob", "eng", "op", "view"]
+    assert [u["username"] for u in client.get("/api/users").json()] == ["bob", "eng", "integ", "op", "view"]
     assert client.delete("/api/users/bob").status_code == 200
-    kinds = [e["message"] for e in client.get("/api/state").json()["events"] if e["kind"] == "auth"]
+    kinds = [e["message"] for e in client.get(f"{A}/state").json()["events"] if e["kind"] == "auth"]
     assert "User bob created (viewer)" in kinds and "User bob deleted" in kinds
 
 
-def test_disabling_user_ends_their_session(db, store):
-    runtime = Runtime(db, SimulatorDriver(db, seed=1), poll_interval=0.05)
-    app = create_app(runtime, users=store)
+def test_disabling_user_ends_their_session(edge, store):
+    app = make_app(edge)
     with TestClient(app) as admin:
         login(admin, "eng")
         other = TestClient(app)  # second browser sharing the running app
@@ -343,3 +366,148 @@ def test_disabling_user_ends_their_session(db, store):
         assert admin.patch("/api/users/op", json={"disabled": True}).status_code == 200
         assert other.get("/api/me").status_code == 401
         assert login(other, "op").status_code == 401
+
+
+# -- edge device: packages, multiple assets, commissioning -------------------------
+
+def two_asset_package():
+    pkg = demo_package()
+    pkg["package_version"] = 7
+    pkg["assets"].append({
+        "id": "PS-02", "name": "Pump Station 2", "screen": "auto",
+        "plc": {"protocol": "sim", "poll_ms": 500},
+        "tags": [
+            {"name": "Run", "kind": "DI", "type": "bool", "description": "Pump running"},
+            {"name": "Flow", "kind": "AI", "type": "float", "description": "Flow", "unit": "L/s",
+             "min": 0, "max": 50, "alarm": {"hi": 45}},
+        ],
+    })
+    return pkg
+
+
+def test_package_validation():
+    pkg = demo_package()
+    pkg["assets"][0]["plc"] = {"protocol": "modbus"}  # no host
+    with pytest.raises(PackageError, match="IP address"):
+        apply_package(Store(), pkg, "t")
+    pkg = demo_package()
+    pkg["assets"][0]["tags"][0]["kind"] = "XX"
+    with pytest.raises(PackageError, match="unknown kind"):
+        apply_package(Store(), pkg, "t")
+    pkg = demo_package()
+    pkg["assets"][0]["tags"][9]["alarm"]["hi"] = "NoSuchTag"
+    with pytest.raises(PackageError, match="unknown tag"):
+        apply_package(Store(), pkg, "t")
+    with pytest.raises(PackageError, match="format"):
+        apply_package(Store(), {"assets": []}, "t")
+    pkg = demo_package()
+    pkg["users"] = [{"username": "op", "role": "operator", "password_hash": hash_password("x" * 8)}]
+    with pytest.raises(PackageError, match="engineer or integrator"):
+        apply_package(Store(), pkg, "t")
+
+
+def test_package_round_trip(edge):
+    exported = export_package(edge)
+    assert exported["client"]["id"] == "DEMO" and len(exported["assets"][0]["tags"]) == 23
+    fresh = Store()
+    apply_package(fresh, exported, "t")
+    assert fresh.tags(ASSET) == edge.tags(ASSET)
+
+
+def test_site_info_and_package_upload(anon):
+    login(anon, "eng")
+    assert anon.post("/api/package", json=two_asset_package()).status_code == 403  # integrators only
+    login(anon, "integ")
+    r = anon.post("/api/package", json=two_asset_package())
+    assert r.status_code == 200 and r.json()["package"]["version"] == 7
+    login(anon, "integ")  # loading a package ends all sessions
+    info = anon.get("/api/site").json()
+    assert [a["id"] for a in info["assets"]] == [ASSET, "PS-02"]
+    assert all(a["running"] for a in info["assets"])
+    cfg = anon.get("/api/assets/PS-02/config").json()
+    assert cfg["asset"]["screen"] == "auto" and {t["name"] for t in cfg["tags"]} == {"Run", "Flow"}
+    with anon.websocket_connect("/ws/PS-02") as ws:
+        assert ws.receive_json()["asset"] == "PS-02"
+    assert anon.get("/api/assets/NOPE/state").status_code == 404
+    bad = two_asset_package()
+    bad["schema"] = 99
+    assert anon.post("/api/package", json=bad).status_code == 422
+
+
+def test_plc_settings_and_test(anon):
+    login(anon, "eng")
+    assert anon.get(f"{A}/plc").json()["protocol"] == "sim"
+    r = anon.post(f"{A}/plc/test", json={})
+    assert r.status_code == 200 and r.json()["ok"] and r.json()["tags_read"] == 23
+    assert anon.put(f"{A}/plc", json={"protocol": "sim"}).status_code == 403  # engineer can't change it
+    login(anon, "integ")
+    assert anon.put(f"{A}/plc", json={"protocol": "modbus", "host": ""}).status_code == 422
+    # Nothing listens on this port: the test reports a clear failure instead of hanging.
+    r = anon.post(f"{A}/plc/test", json={"protocol": "modbus", "host": "127.0.0.1", "port": 1, "poll_ms": 500})
+    assert r.status_code == 200 and not r.json()["ok"] and r.json()["errors"]
+    r = anon.put(f"{A}/plc", json={"protocol": "sim", "poll_ms": 300})
+    assert r.status_code == 200 and r.json()["poll_ms"] == 300
+    changes = anon.get("/api/changes").json()
+    assert changes[-1]["kind"] == "plc" and changes[-1]["user"] == "integ" and not changes[-1]["synced"]
+
+
+def test_io_checks(anon):
+    login(anon, "op")
+    assert anon.put(f"{A}/io/AI_TankLevel/check", json={"status": "pass"}).status_code == 403
+    login(anon, "eng")
+    r = anon.put(f"{A}/io/AI_TankLevel/check", json={"status": "pass", "note": "  4-20 mA verified "})
+    assert r.json()["status"] == "pass" and r.json()["note"] == "4-20 mA verified" and r.json()["user"] == "eng"
+    assert anon.put(f"{A}/io/AI_TankLevel/check", json={"status": "maybe"}).status_code == 422
+    assert anon.put(f"{A}/io/Nope/check", json={"status": "pass"}).status_code == 404
+    io = anon.get(f"{A}/io").json()
+    assert io["checks"]["AI_TankLevel"]["status"] == "pass" and len(io["tags"]) == 23
+    anon.put(f"{A}/io/AI_TankLevel/check", json={"status": None})
+    assert "AI_TankLevel" not in anon.get(f"{A}/io").json()["checks"]
+
+
+def test_onsite_tag_edit(anon, edge):
+    login(anon, "eng")
+    anon.put(f"{A}/io/AI_InletFlow/check", json={"status": "fail", "note": "reads double"})
+    tag = next(t for t in anon.get(f"{A}/io").json()["tags"] if t["name"] == "AI_InletFlow")
+    fixed = {**tag, "description": "Inlet flow (FT-101)", "modbus": {**tag["modbus"], "scale": 20}}
+    assert anon.put(f"{A}/tags/AI_InletFlow/definition", json=fixed).status_code == 403  # integrators only
+    login(anon, "integ")
+    assert anon.put(f"{A}/tags/AI_InletFlow/definition", json=fixed).status_code == 200
+    cfg = anon.get(f"{A}/config").json()
+    assert next(t for t in cfg["tags"] if t["name"] == "AI_InletFlow")["description"] == "Inlet flow (FT-101)"
+    assert "AI_InletFlow" not in anon.get(f"{A}/io").json()["checks"]  # needs re-checking after a change
+    change = anon.get("/api/changes").json()[-1]
+    assert change["kind"] == "tag" and change["before"]["modbus"]["scale"] == 10 and change["after"]["modbus"]["scale"] == 20
+    # Validation
+    assert anon.put(f"{A}/tags/AI_InletFlow/definition", json={**fixed, "min": 200}).status_code == 422
+    assert anon.put(f"{A}/tags/AI_InletFlow/definition", json={**fixed, "name": "Other"}).status_code == 422
+    # New tag, then delete; a tag another alarm depends on can't be deleted
+    new = {"name": "AI_Spare", "kind": "AI", "type": "float", "description": "Spare", "min": 0, "max": 10}
+    assert anon.put(f"{A}/tags/AI_Spare/definition", json=new).status_code == 200
+    assert anon.delete(f"{A}/tags/AI_Spare").status_code == 200
+    assert anon.delete(f"{A}/tags/SP_LevelHiAlarm").status_code == 422
+    # The live runtime still works after the reloads
+    assert anon.get(f"{A}/state").json()["connected"] is True
+
+
+def test_role_escalation_blocked(client):
+    # Engineers can't create or promote anyone to integrator.
+    r = client.post("/api/users", json={"username": "sneaky", "password": "temp-pass-1", "role": "integrator"})
+    assert r.status_code == 403
+    assert client.patch("/api/users/op", json={"role": "integrator"}).status_code == 403
+    assert client.patch("/api/users/integ", json={"disabled": True}).status_code == 403
+    assert all("password_hash" not in str(c) for c in client.get("/api/changes").json())
+
+
+def test_journal_and_history_survive_restart(edge, store):
+    with TestClient(make_app(edge)) as c:
+        login(c, "op")
+        c.post(f"{A}/tags/SP_LevelTarget", json={"value": 66})
+        time.sleep(1.2)
+    edge.add_history([(ASSET, "AI_TankLevel", time.time() - 3600, 42.0)])
+    with TestClient(make_app(edge)) as c:
+        login(c, "op")
+        events = c.get(f"{A}/state").json()["events"]
+        assert any(e["kind"] == "write" and e.get("new") == 66 for e in events)
+        hist = c.get(f"{A}/history?tags=AI_TankLevel&seconds=7200").json()["AI_TankLevel"]
+        assert hist and hist[0][1] == 42.0  # older than the in-memory window: read from the database

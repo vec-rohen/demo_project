@@ -15,6 +15,7 @@ import sys
 from datetime import datetime
 
 from .auth import ROLES, AuthError, UserStore
+from .store import Store
 
 
 def _ask_password() -> str:
@@ -26,7 +27,7 @@ def _ask_password() -> str:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Manage HMI user accounts")
-    parser.add_argument("--file", default=os.environ.get("HMI_USERS", "data/hmi_users.json"))
+    parser.add_argument("--db", default=os.environ.get("HMI_DB", "data/edge.db"))
     sub = parser.add_subparsers(dest="cmd", required=True)
     sub.add_parser("list")
     add = sub.add_parser("add")
@@ -40,7 +41,7 @@ def main() -> None:
     role.add_argument("role", choices=ROLES)
     args = parser.parse_args()
 
-    store = UserStore(args.file)
+    store = UserStore(Store(args.db))
     try:
         if args.cmd == "list":
             for u in sorted(store.users.values(), key=lambda u: u.username):

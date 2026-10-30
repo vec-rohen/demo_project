@@ -1,13 +1,18 @@
-# PLC Web HMI
+# PLC Web HMI – edge device
 
-A browser-based operator interface for a PLC-controlled process. Open it on any
-device on the plant network to:
+The operator interface that runs on each site gateway (e.g. a Siemens IoT2050).
+It reads the PLC, runs alarms, keeps recent trends and serves the HMI on the
+local network, so authorised people can use it with **no internet
+connection**. A cloud portal (next step) will manage clients, sites, assets
+and users centrally and send each gateway only its own configuration.
 
-- **Overview** – live process mimic (pump, tank, heater, valves, level switches) with key process values, sparklines and active alarms.
-- **I/O** – every digital and analog input/output with state lamps, range bars and alarm-limit markers; toggle writable outputs.
-- **Setpoints & Control** – switch Auto/Manual and edit setpoints/targets with range validation and a confirm step. Outputs the PLC drives in Auto are locked until you switch to Manual.
-- **Trends** – multi-pen trend of any analog value (1/5/15 min), scaled to % of span, with a hover cursor.
-- **Alarms & Events** – ISA-18.2 style alarm list (active / unacknowledged, priorities, deadbands, acknowledge) and a journal of every alarm, operator write and system event.
+- **Overview** – live process mimic, or an automatic status overview for any asset, with key values, sparklines and active alarms.
+- **I/O** – every digital and analog point with state lamps, range bars and alarm-limit markers; toggle writable outputs.
+- **Setpoints & Control** – Auto/Manual and setpoint changes with range validation and a confirm step.
+- **Trends** – multi-pen trends from 1 minute to 7 days (recent data in the browser, older from the device database).
+- **Alarms & Events** – ISA-18.2 style alarms with acknowledge, and a journal of every alarm, operator action, configuration change, sign-in and system event.
+- **Commissioning** – device & package info, PLC connection test, I/O checkout with sign-off and report, on-site I/O edits.
+- **Users** – accounts and roles for this site.
 
 ![HMI overview](reports/figures/hmi-overview.png)
 
@@ -15,53 +20,52 @@ device on the plant network to:
 
 ```bash
 pip install -r requirements.txt
-python -m src.hmi                                    # built-in process simulator
-python -m src.hmi --driver modbus --plc 192.168.1.10  # a real PLC over Modbus TCP
+python -m src.hmi                          # first start loads the demo package (simulated plant)
+python -m src.hmi --package site.json      # first start from your own configuration package
+python -m src.hmi --host 0.0.0.0           # serve the local plant network
 ```
 
-Then browse to http://127.0.0.1:8000. Use `--host 0.0.0.0` to serve other
-machines on the network. With the simulator, the **Sim** buttons on the I/O page
-force inputs (E-stop, door switch…) so engineers can exercise alarms and interlocks.
+Then browse to http://127.0.0.1:8000. On first start the server prints a
+one-time password for an `admin` **integrator** account.
 
-## iPhone, iPad and other tablets
+Everything the device needs lives in one SQLite file, `data/edge.db`
+(`--db` to change; git-ignored): client/site/device identity, assets, PLC
+connections, I/O, users, recent trend history (`settings.history_days`,
+default 7), the event journal, I/O check results, and a log of changes made
+on site waiting to sync to the cloud. A package is only loaded when the
+database is empty; after that, change things in the UI or load a new package
+from the Commissioning tab.
 
-The interface adapts to phone and tablet screens: touch-sized controls, no
-zoom-jumps when typing, and tap-and-drag on the trend chart to read values.
-It needs iOS/iPadOS 16.2 or newer. To use it like an app, open it in Safari,
-tap **Share → Add to Home Screen**; it then opens full-screen without the
-address bar. (Home-screen apps keep their own sign-in, separate from Safari.)
+## Workflow
 
-## Sign-in and roles
+**Offsite (today: a package file; later: the cloud portal)** – describe the
+client, site, device and each asset with its PLC connection and I/O in a
+configuration package, and load it on the gateway.
 
-On first start, when no accounts exist, the server prints a one-time password
-for an `admin` engineer account. Sign in with it and you'll be asked to choose
-your own password straight away. Then add your users on the **Users** tab.
+**Onsite (Commissioning tab)**
 
-| Role | Can do |
-|------|--------|
-| Viewer | See every screen, trend and alarm. Read-only. |
-| Operator | Change setpoints and outputs, switch Auto/Manual, acknowledge alarms. |
-| Engineer | Everything above, plus alarm limits, loop tuning (tags marked `"role": "engineer"` in `tags.json`), simulator inputs and user management. |
+1. **PLC connection** – enter or confirm the PLC's IP, port, unit ID and poll rate and press **Test connection**: it opens a separate connection and reads every point once, reporting what it read and any errors. Integrators then **Save & apply**; the asset reconnects without restarting the server.
+2. **I/O check** – force or simulate each signal at the PLC, watch the live value, and mark it **Pass**, **Fail** (with a note) or **N/A**. Each mark records who and when. Filter to what's left to check, and **Export report** for a CSV commissioning record.
+3. **Fix on site** – integrators can edit a point (description, range, Modbus address/scale, alarms) or add/delete points. The change applies immediately, clears that point's check so it gets re-tested, and is kept in the **Local changes** log so the cloud can pick it up later.
 
-- New accounts and admin password resets get a temporary password; the user must replace it at their next sign-in.
-- Sessions end after 30 minutes without interaction (`HMI_IDLE_MINUTES`, `0` disables). Users get a warning a minute beforehand.
-- Five wrong passwords lock that username for a minute.
-- Every sign-in, sign-out and account change is recorded in the event journal, and every operator action is logged under the signed-in user.
-- Accounts are stored in `data/hmi_users.json` (`HMI_USERS` to change), with scrypt password hashes. The file is git-ignored.
-- Locked out? Manage accounts from the server's command line:
+## Configuration packages
 
-  ```bash
-  python -m src.hmi.users list
-  python -m src.hmi.users passwd admin
-  python -m src.hmi.users add alice --role operator --name "Alice Smith"
-  ```
+```bash
+python -m src.hmi.package demo site.json     # write the demo package to start from
+python -m src.hmi.package import site.json   # apply one to data/edge.db
+python -m src.hmi.package export backup.json # current configuration incl. on-site edits
+```
 
-## Connecting your PLC
+A package holds `client`, `site`, `device` (each with an `id` and `name`),
+`settings`, a list of `assets` – each with its `plc` connection
+(`{"protocol": "modbus", "host": "192.168.1.10", "port": 502, "unit": 1, "poll_ms": 500}`
+or `{"protocol": "sim"}`) and its `tags` – and optionally `users`. One gateway
+can run several assets; give each a unique `id`. See `src/hmi/package.py` for
+the full layout. Packages are validated before anything is changed.
 
-Tags live in [`src/hmi/tags.json`](src/hmi/tags.json) (or pass `--tags my_tags.json`).
-Each tag has a kind (`DI`, `DO`, `AI`, `AO`, `SP`), type (`bool`/`float`), units,
-engineering range, whether operators may write it, optional alarm limits (a
-number, or the name of a setpoint tag holding the limit), and a Modbus address:
+Each tag has a kind (`DI`, `DO`, `AI`, `AO`, `SP`), type (`bool`/`float`),
+units, engineering range, whether operators may write it, the minimum role
+allowed to change it, optional alarms, and a Modbus address:
 
 ```json
 {"name": "AI_TankLevel", "kind": "AI", "type": "float", "unit": "%", "min": 0, "max": 100,
@@ -70,21 +74,50 @@ number, or the name of a setpoint tag holding the limit), and a Modbus address:
 ```
 
 `table` is `coil`, `discrete`, `input` or `holding`; analog values are signed
-16-bit registers divided by `scale`. Other protocols (OPC UA, S7, EtherNet/IP)
-can be added by implementing the small `Driver` interface in
-`src/hmi/drivers/base.py`.
+16-bit registers divided by `scale`. Other protocols (S7, OPC UA) can be added
+by implementing the small `Driver` interface in `src/hmi/drivers/base.py`.
+
+## iPhone, iPad and other tablets
+
+The interface adapts to phone and tablet screens: touch-sized controls, no
+zoom-jumps when typing, tap-and-drag on trends, and card-style I/O checks on
+phones. It needs iOS/iPadOS 16.2 or newer. In Safari, **Share → Add to Home
+Screen** opens it full-screen like an app (with its own sign-in).
+
+## Sign-in and roles
+
+| Role | Can do |
+|------|--------|
+| Viewer | See every screen, trend and alarm. Read-only. |
+| Operator | Change setpoints and outputs, switch Auto/Manual, acknowledge alarms. |
+| Engineer | Everything above, plus tags marked `"role": "engineer"` (alarm limits, tuning), simulator inputs, PLC connection tests, I/O check sign-off and managing users up to engineer. |
+| Integrator | Your commissioning technicians: everything, plus PLC connection settings, editing I/O on site, loading/downloading packages and managing integrator accounts. |
+
+- New accounts and admin password resets get a temporary password; the user must replace it at their next sign-in.
+- Sessions end after 30 minutes without interaction (`HMI_IDLE_MINUTES`, `0` disables), with a warning a minute beforehand.
+- Five wrong passwords lock that username for a minute.
+- Accounts live in the device database with scrypt password hashes; normally they'll arrive in the package from the cloud. Local account and password changes are logged for sync.
+- Locked out? Manage accounts from the gateway's command line:
+
+  ```bash
+  python -m src.hmi.users list
+  python -m src.hmi.users passwd admin
+  python -m src.hmi.users add alice --role operator --name "Alice Smith"
+  ```
 
 ## Architecture
 
 ```
-browser ──WebSocket /ws (4 Hz)──▶ FastAPI ── Runtime (poll, alarms, history, journal) ── Driver ── PLC / simulator
-        ──REST /api/*────────────▶
+browser ──WebSocket /ws/{asset}──▶ FastAPI ── SiteManager ──┬─ Runtime (asset 1: poll, alarms, trends) ── Driver ── PLC
+        ──REST /api/*────────────▶            │             └─ Runtime (asset 2) ── Driver ── PLC
+                                              └── Store (SQLite: config, users, history, journal, checks, change log)
 ```
 
-REST: `GET /api/config`, `GET /api/state`, `GET /api/history`,
-`POST /api/tags/{name}`, `POST /api/alarms/ack`, `POST /api/simulate/{name}`,
-`POST /api/login`, `POST /api/logout`, `GET /api/me`, `POST /api/me/password`,
-`GET|POST /api/users`, `PATCH|DELETE /api/users/{name}`.
+REST, per asset under `/api/assets/{asset}/`: `config`, `state`, `history`,
+`tags/{name}` (write), `simulate/{name}`, `alarms/ack`, `plc` (get/put),
+`plc/test`, `io`, `io/{name}/check`, `tags/{name}/definition` (put/delete).
+Device-wide: `/api/site`, `/api/package` (get/post), `/api/changes`,
+`/api/login`, `/api/logout`, `/api/me`, `/api/me/password`, `/api/users`.
 
 > **Security:** the session cookie is HttpOnly and SameSite=Strict, but the
 > server itself speaks plain HTTP. When serving beyond localhost, put it behind

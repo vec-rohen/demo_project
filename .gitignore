@@ -94,5 +94,6 @@ target/
 
 # exclude data from source control by default
 # /data/
-# HMI user accounts (password hashes)
+# Edge device database (configuration, password hashes, history)
+data/edge.db*
 data/hmi_users.json

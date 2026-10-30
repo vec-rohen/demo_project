@@ -65,8 +65,18 @@ class SimulatorDriver(Driver):
             "SP_TempHiAlarm": 60.0,
             "SP_LevelKp": 2.5,
         }
-        # Only expose tags that exist in the tag database.
+        # The heated-tank model needs all of its tags; any other asset gets
+        # placeholder values that operators can still write and trend.
+        self._tank_model = all(name in db.tags for name in self.values)
         self.values = {k: v for k, v in self.values.items() if k in db.tags}
+        for tag in db.tags.values():
+            if tag.name not in self.values:
+                if tag.type == "bool":
+                    self.values[tag.name] = False
+                elif tag.min is not None and tag.max is not None:
+                    self.values[tag.name] = round((tag.min + tag.max) / 2, tag.decimals)
+                else:
+                    self.values[tag.name] = 0.0
         # The pump motor takes a moment to respond, like a real starter.
         self._pump_feedback_delay = 0.0
 
@@ -105,6 +115,9 @@ class SimulatorDriver(Driver):
 
     # -- one PLC scan + physics update ------------------------------------
     def step(self, dt: float) -> None:
+        if not self._tank_model:
+            self._step_generic()
+            return
         v = self.values
         level = float(v["AI_TankLevel"])
         temp = float(v["AI_TankTemp"])
@@ -178,3 +191,11 @@ class SimulatorDriver(Driver):
         v["DO_AlarmBeacon"] = (
             not v["DI_EStopOK"] or bool(v["DI_LevelHighSw"]) or not v["DI_DoorClosed"]
         )
+
+    def _step_generic(self) -> None:
+        """Gentle random walk on analog inputs so trends and alarms have something to show."""
+        for tag in self.db.tags.values():
+            if tag.kind == "AI" and tag.min is not None and tag.max is not None:
+                span = tag.max - tag.min
+                value = float(self.values[tag.name]) + self.rng.gauss(0, span * 0.002)
+                self.values[tag.name] = round(min(tag.max, max(tag.min, value)), 4)

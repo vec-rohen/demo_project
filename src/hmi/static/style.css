@@ -354,3 +354,49 @@ input:focus-visible, select:focus-visible { outline: 2px solid var(--focus); out
 @media (max-width: 600px) {
   #user-name { display: none; }
 }
+
+/* --- touch screens (iPhone, iPad, Android) --------------------------- */
+button, .pen, input, select { touch-action: manipulation; } /* no double-tap zoom delay */
+.io-bar { width: 110px; }
+.io-act button:disabled { pointer-events: none; } /* let the cell explain the lock on tap */
+.vd-change { margin: 12px 0 0; }
+#vd-form .sp-edit input[type=number] { width: 120px; }
+#trend { touch-action: pan-y; } /* horizontal drag scrubs the trend, vertical scrolls */
+
+/* Home-screen app: keep content clear of the notch and home indicator. */
+.topbar { padding-top: max(10px, env(safe-area-inset-top)); padding-left: max(20px, env(safe-area-inset-left));
+  padding-right: max(20px, env(safe-area-inset-right)); }
+main { padding-left: max(20px, env(safe-area-inset-left)); padding-right: max(20px, env(safe-area-inset-right));
+  padding-bottom: max(40px, env(safe-area-inset-bottom)); }
+.toasts { bottom: max(16px, env(safe-area-inset-bottom)); }
+
+@media (pointer: coarse) {
+  /* iOS zooms into any field with text under 16px; keep inputs at 16px. */
+  input:not([type=range]):not([type=checkbox]), select, .sp-edit input[type=number] { font-size: 16px; }
+  /* Apple's minimum comfortable touch target is 44 x 44 pt. */
+  .btn, .btn.small, .segmented button, .segmented.small button, .tabs button, .pen, .pw-toggle,
+  .menu button, .user-chip, .icon-btn, .sim-btn { min-height: 44px; }
+  .btn.small, .sim-btn { padding: 6px 12px; font-size: 13px; }
+  .icon-btn { width: 44px; }
+  .segmented.small button { padding: 6px 12px; }
+  .switch-btn { width: 56px; height: 32px; border-radius: 16px; margin: 6px 0; }
+  .switch-btn::after { width: 24px; height: 24px; }
+  .switch-btn[aria-checked="true"]::after { left: 27px; }
+  input[type=range] { height: 32px; }
+  .io-table td { padding-top: 9px; padding-bottom: 9px; }
+  .chip { min-height: 32px; }
+  .chip.user-chip { min-height: 44px; }
+  /* Invisible padding gives the 32 px switch a 44 px tap area. */
+  .switch-btn::before { content: ""; position: absolute; inset: -7px -4px; }
+}
+
+@media (max-width: 600px) {
+  .topbar, main { padding-left: max(16px, env(safe-area-inset-left)); padding-right: max(16px, env(safe-area-inset-right)); }
+  /* Narrower bars and wrapped tag names so I/O rows fit an iPhone. */
+  .io-bar { width: 56px; min-width: 56px; }
+  .io-name { word-break: break-all; }
+  .io-val { font-size: 13px; }
+  .io-table td { padding-left: 4px; padding-right: 4px; }
+  .trend-picker { flex-wrap: nowrap; overflow-x: auto; padding-bottom: 4px; }
+  .pen { flex: none; }
+}

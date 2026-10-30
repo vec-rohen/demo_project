@@ -23,6 +23,14 @@ Then browse to http://127.0.0.1:8000. Use `--host 0.0.0.0` to serve other
 machines on the network. With the simulator, the **Sim** buttons on the I/O page
 force inputs (E-stop, door switch…) so engineers can exercise alarms and interlocks.
 
+## iPhone, iPad and other tablets
+
+The interface adapts to phone and tablet screens: touch-sized controls, no
+zoom-jumps when typing, and tap-and-drag on the trend chart to read values.
+It needs iOS/iPadOS 16.2 or newer. To use it like an app, open it in Safari,
+tap **Share → Add to Home Screen**; it then opens full-screen without the
+address bar. (Home-screen apps keep their own sign-in, separate from Safari.)
+
 ## Sign-in and roles
 
 On first start, when no accounts exist, the server prints a one-time password

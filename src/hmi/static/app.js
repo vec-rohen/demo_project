@@ -298,7 +298,12 @@ function buildIO() {
     const table = $(`#tbl-${kind}`);
     table.replaceChildren();
     for (const tag of Object.values(S.tags).filter((t) => t.kind === kind)) {
-      const action = el("td", { class: "io-act" });
+      // Disabled buttons swallow taps and touch screens can't show tooltips,
+      // so a tap on a locked control explains why it's locked.
+      const action = el("td", { class: "io-act", onclick: () => {
+        const btn = $("button", action);
+        if (btn?.disabled && btn.title) toast(btn.title, "error");
+      } });
       if (kind === "DI" && S.config.simulated_inputs) {
         action.append(el("button", { class: "btn small sim-btn", text: "Sim", disabled: !can("engineer"),
           title: can("engineer") ? "Toggle this input in the simulator" : "Engineer role required",
@@ -308,7 +313,7 @@ function buildIO() {
           "data-switch": tag.name, onclick: () => writeTag(tag.name, !S.values[tag.name]) }));
       } else if (tag.writable) {
         action.append(el("button", { class: "btn small", text: "Set…", "data-set": tag.name,
-          onclick: () => promptAnalog(tag.name) }));
+          onclick: () => openValueDialog(tag.name) }));
       }
       const indicator = tag.type === "bool" ? el("span", { class: "lamp" }) : analogBar(tag.name);
       table.append(el("tr", { "data-row": tag.name },
@@ -321,7 +326,7 @@ function buildIO() {
 }
 
 function analogBar(name) {
-  const bar = el("div", { class: "bar", style: "width:110px" }, el("div", { class: "bar-fill" }));
+  const bar = el("div", { class: "bar io-bar" }, el("div", { class: "bar-fill" }));
   for (const cond of ["lo", "hi", "hihi"]) {
     if (S.tags[name].alarm?.[cond] !== undefined) bar.append(el("div", { class: "bar-mark", "data-limit": cond }));
   }
@@ -356,16 +361,42 @@ function renderIO() {
   }
 }
 
-async function promptAnalog(name) {
+// Edit one analog value in a dialog (used by the I/O page's "Set…" buttons).
+function openValueDialog(name) {
   const tag = S.tags[name];
-  const raw = prompt(`${tag.description} (${tag.min}–${tag.max} ${tag.unit})`, fmt(name, undefined, false));
-  if (raw === null) return;
-  const value = Number(raw);
-  if (!Number.isFinite(value) || value < tag.min || value > tag.max) {
-    toast(`Enter a number between ${tag.min} and ${tag.max}`, "error");
-    return;
-  }
-  await writeTag(name, value);
+  const dlg = $("#value-dialog");
+  const num = $("#vd-number"), range = $("#vd-range");
+  const step = 10 ** -(tag.decimals ?? 1);
+  for (const input of [num, range]) { input.min = tag.min; input.max = tag.max; input.step = step; }
+  const current = Number(S.values[name] ?? tag.min).toFixed(tag.decimals ?? 1);
+  num.value = range.value = current;
+  dlg.dataset.tag = name;
+  $("#vd-title").textContent = tag.description;
+  $("#vd-tag").textContent = name;
+  $("#vd-range-text").textContent = `Range ${tag.min} – ${tag.max} ${tag.unit}`;
+  $("#vd-unit").textContent = tag.unit;
+  $("#vd-error").hidden = true;
+  const preview = () => { $("#vd-change").textContent = `${fmt(name)} → ${fmt(name, Number(num.value))}`; };
+  num.oninput = () => { range.value = num.value; preview(); };
+  range.oninput = () => { num.value = range.value; preview(); };
+  preview();
+  dlg.showModal();
+}
+
+function initValueDialog() {
+  const dlg = $("#value-dialog");
+  $("#vd-cancel").onclick = () => dlg.close();
+  $("#vd-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const name = dlg.dataset.tag, tag = S.tags[name];
+    const value = Number($("#vd-number").value);
+    if ($("#vd-number").value === "" || !Number.isFinite(value) || value < tag.min || value > tag.max) {
+      $("#vd-error").textContent = `Enter a number between ${tag.min} and ${tag.max}.`;
+      $("#vd-error").hidden = false;
+      return;
+    }
+    if (await writeTag(name, value, { confirm: false })) dlg.close();
+  });
 }
 
 async function simulateInput(name) {
@@ -399,7 +430,7 @@ const RELATED_PV = { SP_LevelTarget: "AI_TankLevel", SP_LevelHiAlarm: "AI_TankLe
   SP_TempTarget: "AI_TankTemp", SP_TempHiAlarm: "AI_TankTemp", AO_PumpSpeed: "AI_InletFlow", AO_OutletValve: "AI_OutletFlow" };
 
 function spCard(tag) {
-  const num = el("input", { type: "number", min: tag.min, max: tag.max, step: 10 ** -(tag.decimals ?? 1),
+  const num = el("input", { type: "number", inputmode: "decimal", min: tag.min, max: tag.max, step: 10 ** -(tag.decimals ?? 1),
     "aria-label": `New ${tag.description}` });
   const range = el("input", { type: "range", min: tag.min, max: tag.max, step: 10 ** -(tag.decimals ?? 1),
     "aria-label": `${tag.description} slider` });
@@ -504,8 +535,15 @@ function buildTrendPicker() {
     };
   }
   const canvas = $("#trend");
-  canvas.addEventListener("mousemove", (e) => { S.hoverX = e.offsetX; renderTrend(); });
-  canvas.addEventListener("mouseleave", () => { S.hoverX = null; renderTrend(); });
+  // Pointer events cover mouse, pen and touch: hover with a mouse, or tap and
+  // drag sideways with a finger to scrub (vertical swipes still scroll the page).
+  const scrub = (e) => { S.hoverX = e.offsetX; renderTrend(); };
+  canvas.addEventListener("pointermove", scrub);
+  canvas.addEventListener("pointerdown", scrub);
+  canvas.addEventListener("pointerleave", (e) => { if (e.pointerType === "mouse") { S.hoverX = null; renderTrend(); } });
+  document.addEventListener("pointerdown", (e) => {
+    if (e.target !== canvas && S.hoverX !== null) { S.hoverX = null; renderTrend(); }
+  });
 }
 
 function renderTrend() {
@@ -899,6 +937,7 @@ async function init() {
   buildIO();
   buildSetpoints();
   buildTrendPicker();
+  initValueDialog();
   if (S.me.role === "engineer") initUserAdmin();
 
   for (const b of $$(".tabs button")) b.onclick = () => selectTab(b.dataset.tab);

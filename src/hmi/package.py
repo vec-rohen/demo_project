@@ -151,8 +151,9 @@ def export_package(store: Store, include_users: bool = True) -> dict[str, Any]:
         "assets": [{**a, "tags": store.tags(a["id"])} for a in store.assets()],
         "local_changes": len(store.changes(pending_only=True)),
     }
-    if include_users:
-        pkg["users"] = store.users()
+    users = store.users()
+    if include_users and users:  # omitted when empty: importing then leaves accounts as they are
+        pkg["users"] = users
     return pkg
 
 

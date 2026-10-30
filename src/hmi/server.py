@@ -16,7 +16,7 @@ import os
 from contextlib import asynccontextmanager
 from dataclasses import asdict
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Optional
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
@@ -42,7 +42,7 @@ class WriteRequest(BaseModel):
 
 
 class AckRequest(BaseModel):
-    id: str | None = None
+    id: Optional[str] = None
 
 
 class LoginRequest(BaseModel):
@@ -63,26 +63,28 @@ class NewUser(BaseModel):
 
 
 class UserUpdate(BaseModel):
-    role: str | None = None
-    full_name: str | None = None
-    disabled: bool | None = None
-    password: str | None = None
+    role: Optional[str] = None
+    full_name: Optional[str] = None
+    disabled: Optional[bool] = None
+    password: Optional[str] = None
 
 
 class IOCheck(BaseModel):
-    status: str | None  # pass | fail | na, or null to clear
+    status: Optional[str]  # pass | fail | na, or null to clear
     note: str = ""
 
 
 def open_store(path: str | None = None) -> Store:
-    """Open the device database, loading a starting package if it is empty."""
+    """Open the device database. When it is empty, load ``HMI_PACKAGE`` if given,
+    the demo plant if ``HMI_DEMO=1``, or otherwise start unconfigured and wait
+    for an integrator to load a package from the browser."""
     store = Store(path or os.environ.get("HMI_DB", "data/edge.db"))
     if store.is_empty():
         package_file = os.environ.get("HMI_PACKAGE")
         if package_file:
             pkg = json.loads(Path(package_file).read_text(encoding="utf-8"))
             apply_package(store, pkg, "first start", source="file")
-        else:
+        elif os.environ.get("HMI_DEMO") == "1":
             apply_package(store, demo_package(), "first start", source="demo")
     return store
 
@@ -99,12 +101,19 @@ def create_app(store: Store | None = None, *, site: SiteManager | None = None,
         secure_cookies = os.environ.get("HMI_SECURE_COOKIES", "0") == "1"
     sessions = SessionManager(users, idle_timeout=idle_timeout)
 
+    # On a service install the console goes to the system journal, so the
+    # one-time password is also written to a root-only file the installer shows.
+    password_file = os.environ.get("HMI_INITIAL_PASSWORD_FILE")
     first_password = users.bootstrap()
     if first_password:
         banner = (f"\n{'=' * 64}\n  No user accounts found – created integrator account\n"
                   f"    username: admin\n    password: {first_password}\n"
                   f"  You will be asked to change it at first sign-in.\n{'=' * 64}\n")
         print(banner, flush=True)
+        if password_file:
+            Path(password_file).parent.mkdir(parents=True, exist_ok=True)
+            Path(password_file).write_text(f"username: admin\npassword: {first_password}\n", encoding="utf-8")
+            os.chmod(password_file, 0o600)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -204,6 +213,8 @@ def create_app(store: Store | None = None, *, site: SiteManager | None = None,
         sessions.end_user_sessions(user.username, keep=request.cookies.get(COOKIE))
         store.log_change(user.username, None, "user.password", user.username, None,
                          {"password_hash": users.get(user.username).password_hash})
+        if password_file and user.username == "admin" and Path(password_file).exists():
+            Path(password_file).unlink()  # the one-time password is no longer valid
         site.events.add("auth", f"{user.username} changed their password", user=user.username)
         return {"ok": True}
 
@@ -334,7 +345,7 @@ def create_app(store: Store | None = None, *, site: SiteManager | None = None,
         return runtime_for(asset_id).snapshot()
 
     @app.get("/api/assets/{asset_id}/history")
-    def history(asset_id: str, tags: str | None = None, seconds: float = 900,
+    def history(asset_id: str, tags: Optional[str] = None, seconds: float = 900,
                 _: User = Depends(viewer)) -> dict[str, list[tuple[float, float]]]:
         runtime = runtime_for(asset_id)
         names = tags.split(",") if tags else list(runtime.history)

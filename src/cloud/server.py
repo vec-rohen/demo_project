@@ -13,7 +13,7 @@ import os
 import secrets
 import time
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Optional
 
 from fastapi import Body, Depends, FastAPI, HTTPException, Request, Response
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
@@ -182,7 +182,7 @@ def create_app(db: CloudDB | None = None, idle_timeout: float | None = None,
         return service.overview()
 
     @app.get("/api/audit")
-    def audit(target: str | None = None, _: User = Depends(signed_in)) -> list[dict[str, Any]]:
+    def audit(target: Optional[str] = None, _: User = Depends(signed_in)) -> list[dict[str, Any]]:
         return service.audit_log(500, target)
 
     # -- clients ------------------------------------------------------------------
@@ -313,7 +313,7 @@ def create_app(db: CloudDB | None = None, idle_timeout: float | None = None,
 
     # -- users -----------------------------------------------------------------------
     @app.get("/api/users")
-    def users(client_id: str | None = None, kind: str | None = None, _: User = Depends(signed_in)):
+    def users(client_id: Optional[str] = None, kind: Optional[str] = None, _: User = Depends(signed_in)):
         return service.list_users(client_id=client_id, staff=kind == "staff")
 
     @app.post("/api/users", status_code=201)

@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from typing import Union
 
 from ..tags import TagDatabase
 
-Value = bool | float
+Value = Union[bool, float]
 
 
 class Driver(ABC):

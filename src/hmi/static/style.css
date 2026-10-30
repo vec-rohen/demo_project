@@ -421,6 +421,7 @@ main { padding-left: max(20px, env(safe-area-inset-left)); padding-right: max(20
 .btn-row.tight { margin-top: 0; }
 label.btn.file-btn { display: inline-flex; align-items: center; font-size: inherit; color: inherit; margin: 0; }
 label.btn.file-btn[hidden] { display: none; }
+label.btn.primary.file-btn { color: #0d1424; font-weight: 600; }
 .chip[hidden], .mode-panel[hidden] { display: none; }
 .plc-form { display: flex; flex-wrap: wrap; gap: 0 12px; }
 .plc-form .field { flex: 1 1 170px; }
@@ -491,3 +492,10 @@ label.check { display: flex; gap: 8px; align-items: center; color: var(--text); 
   .io-check-table .c-by { grid-area: by; min-width: 0; }
   .io-check-table .c-by:has(> .muted:only-child) { display: none; }
 }
+
+/* --- unconfigured device ---------------------------------------------- */
+.setup-panel { max-width: 640px; margin: 24px auto; }
+.setup-panel h2 { font-size: 18px; margin-bottom: 8px; }
+.setup-steps { margin: 12px 0 16px; padding-left: 20px; line-height: 1.7; }
+.setup-panel .facts { margin-top: 18px; }
+nav.tabs[hidden] { display: none; }

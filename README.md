@@ -63,15 +63,22 @@ semicolon or tab separated; Excel's UTF-8 or Windows encodings both work.
 
 ## Run it
 
+**On an IoT2050:** use the installer – it sets the app up as a Linux service
+that starts on boot. See [deploy/iot2050/README.md](deploy/iot2050/README.md).
+
+**On a PC, for development or a demo:**
+
 ```bash
 pip install -r requirements.txt
-python -m src.hmi                          # first start loads the demo package (simulated plant)
+python -m src.hmi --demo                   # first start with the simulated demo plant
+python -m src.hmi                          # first start unconfigured: load a package in the browser
 python -m src.hmi --package site.json      # first start from your own configuration package
 python -m src.hmi --host 0.0.0.0           # serve the local plant network
 ```
 
 Then browse to http://127.0.0.1:8000. On first start the server prints a
-one-time password for an `admin` **integrator** account.
+one-time password for an `admin` **integrator** account. A new device with no
+package shows a setup screen where an integrator loads one. Python 3.9 or newer.
 
 Everything the device needs lives in one SQLite file, `data/edge.db`
 (`--db` to change; git-ignored): client/site/device identity, assets, PLC

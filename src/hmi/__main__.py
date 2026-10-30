@@ -1,7 +1,8 @@
 """Start the edge HMI.
 
-    python -m src.hmi                              # demo package (simulated plant) on first start
+    python -m src.hmi                              # starts unconfigured: load a package in the browser
     python -m src.hmi --package site.json          # first start from a configuration package
+    python -m src.hmi --demo                       # first start with the simulated demo plant
     python -m src.hmi --host 0.0.0.0               # serve the local plant network
 
 All configuration (assets, PLC connections, I/O, users) lives in the device
@@ -20,11 +21,14 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Edge web HMI")
     parser.add_argument("--db", help="device database file (default data/edge.db)")
     parser.add_argument("--package", help="configuration package to load if the database is empty")
+    parser.add_argument("--demo", action="store_true", help="load the simulated demo plant if the database is empty")
     parser.add_argument("--host", default="127.0.0.1",
                         help="interface to listen on; use 0.0.0.0 to serve the plant network")
     parser.add_argument("--port", type=int, default=8000)
     args = parser.parse_args()
 
+    if args.demo:
+        os.environ["HMI_DEMO"] = "1"
     for env, value in (("HMI_DB", args.db), ("HMI_PACKAGE", args.package)):
         if value is not None:
             os.environ[env] = value

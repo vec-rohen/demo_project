@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import socket
 import time
 from typing import Any, Callable
 
@@ -32,8 +33,15 @@ class SiteManager:
         self.poll_interval = poll_interval  # overrides each asset's poll_ms (tests)
         self.events = EventLog(store=store)
         self.runtimes: dict[str, Runtime] = {}
-        self._lock = asyncio.Lock()
+        self._lock_obj: asyncio.Lock | None = None
         self._maintenance: asyncio.Task | None = None
+
+    @property
+    def _lock(self) -> asyncio.Lock:
+        # Created on first use, inside the running event loop (required on Python 3.9).
+        if self._lock_obj is None:
+            self._lock_obj = asyncio.Lock()
+        return self._lock_obj
 
     # -- lifecycle --------------------------------------------------------------
     async def start(self) -> None:
@@ -119,6 +127,8 @@ class SiteManager:
             "settings": self.store.get_meta("settings", {}),
             "assets": assets,
             "pending_changes": len(self.store.changes(pending_only=True)),
+            "configured": bool(assets),
+            "hostname": socket.gethostname(),
         }
 
     async def test_connection(self, asset_id: str, plc: dict[str, Any], timeout: float = 10.0) -> dict[str, Any]:

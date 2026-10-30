@@ -1,0 +1,6 @@
+# Python packages for the edge HMI on an IoT2050 (arm64 Debian, Python 3.9+).
+# Pure-Python or with prebuilt aarch64 wheels, so nothing needs compiling on the device.
+fastapi>=0.110,<1
+uvicorn>=0.29          # plain uvicorn: no C extensions to build on ARM
+websockets>=11         # live data to the browser
+pymodbus>=3.6,<4       # 3.8.x is the newest that runs on Python 3.9; both naming styles are supported

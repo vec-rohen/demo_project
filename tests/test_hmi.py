@@ -196,8 +196,13 @@ def test_history_endpoint(client):
 def test_modbus_driver_against_local_server(db):
     """Round-trip reads/writes through a real Modbus TCP server."""
     pytest.importorskip("pymodbus")
-    from pymodbus.datastore import ModbusDeviceContext, ModbusSequentialDataBlock, ModbusServerContext
+    from pymodbus import datastore
+    from pymodbus.datastore import ModbusSequentialDataBlock, ModbusServerContext
     from pymodbus.server import ModbusTcpServer
+
+    # pymodbus >= 3.10 says "device", older releases (Python 3.9) say "slave".
+    ModbusDeviceContext = getattr(datastore, "ModbusDeviceContext", None) or datastore.ModbusSlaveContext
+    devices_kw = "devices" if hasattr(datastore, "ModbusDeviceContext") else "slaves"
 
     from src.hmi.drivers.modbus import ModbusDriver
 
@@ -209,7 +214,7 @@ def test_modbus_driver_against_local_server(db):
             hr=ModbusSequentialDataBlock(1, [0] * 32),
         )
         # Data blocks start at 1 so that protocol address 0 maps to the first value.
-        server = ModbusTcpServer(ModbusServerContext(devices=device, single=True), address=("127.0.0.1", 15020))
+        server = ModbusTcpServer(ModbusServerContext(**{devices_kw: device}, single=True), address=("127.0.0.1", 15020))
         task = asyncio.create_task(server.serve_forever())
         await asyncio.sleep(0.3)
         driver = ModbusDriver(db, host="127.0.0.1", port=15020)
@@ -511,3 +516,28 @@ def test_journal_and_history_survive_restart(edge, store):
         assert any(e["kind"] == "write" and e.get("new") == 66 for e in events)
         hist = c.get(f"{A}/history?tags=AI_TankLevel&seconds=7200").json()["AI_TankLevel"]
         assert hist and hist[0][1] == 42.0  # older than the in-memory window: read from the database
+
+
+def test_fresh_device_waits_for_configuration(tmp_path, monkeypatch):
+    """A new install has no plant until an integrator loads a package from the browser."""
+    pw_file = tmp_path / "initial-admin-password"
+    monkeypatch.setenv("HMI_INITIAL_PASSWORD_FILE", str(pw_file))
+    monkeypatch.delenv("HMI_DEMO", raising=False)
+    monkeypatch.delenv("HMI_PACKAGE", raising=False)
+    from src.hmi.server import open_store
+
+    store = open_store(str(tmp_path / "edge.db"))
+    assert store.is_empty()
+    app = create_app(store, site=SiteManager(store, driver_factory=sim_factory, poll_interval=0.05))
+    password = pw_file.read_text().split("password: ")[1].strip()
+    assert oct(pw_file.stat().st_mode)[-3:] == "600"
+    with TestClient(app) as c:
+        assert login(c, "admin", password).status_code == 200
+        info = c.get("/api/site").json()
+        assert info["configured"] is False and info["assets"] == [] and info["hostname"]
+        c.post("/api/me/password", json={"current": password, "new": "my-own-pass-1"})
+        assert not pw_file.exists()  # one-time password removed once it has been replaced
+        assert c.post("/api/package", json=demo_package()).status_code == 200
+        login(c, "admin", "my-own-pass-1")
+        assert c.get("/api/site").json()["configured"] is True
+        assert c.get(f"{A}/state").json()["connected"] is True

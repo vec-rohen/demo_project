@@ -935,6 +935,29 @@ function initUserAdmin() {
   });
 }
 
+/* ------------------------------------------------- unconfigured device */
+// A fresh device has no assets until a configuration package is loaded.
+function showUnconfigured() {
+  $("nav.tabs").hidden = true;
+  $("#plant-name").textContent = "New device";
+  $("#plant-desc").textContent = `${S.site.hostname} · waiting for configuration`;
+  for (const id of ["#conn-chip", "#mode-chip"]) $(id).hidden = true;
+  const integrator = hasRole("integrator") && !S.me.must_change_password;
+  const file = el("input", { type: "file", accept: ".json,application/json", hidden: true, onchange: loadPackageFile });
+  $("main").replaceChildren(el("section", { class: "panel setup-panel" },
+    el("h2", { text: "This device isn't configured yet" }),
+    el("p", { class: "muted", text: integrator
+      ? "Load the configuration package for this device. Download it from the cloud portal (the device's page → Version history → Download), copy it to this computer, then choose it below."
+      : "An integrator needs to load this device's configuration package before the HMI can be used." }),
+    el("ol", { class: "setup-steps" },
+      el("li", { text: "In the cloud portal, publish a version for this IoT2050 and download it." }),
+      el("li", { text: "Here, press Load package and pick the downloaded .json file." }),
+      el("li", { text: "Sign in again with your cloud portal staff account (the package replaces this temporary admin account), then test the PLC connection and check the I/O on the Commissioning tab." })),
+    integrator ? el("label", { class: "btn primary file-btn" }, "Load package…", file) : null,
+    el("dl", { class: "facts" }, el("dt", { text: "Device" }), el("dd", { text: S.site.hostname }),
+      el("dt", { text: "Address" }), el("dd", { text: location.host }))));
+}
+
 /* -------------------------------------------------------- site & assets */
 function pickAsset() {
   const ids = S.site.assets.map((a) => a.id);
@@ -1002,7 +1025,7 @@ async function init() {
   initAccount();
   S.site = await api("GET", "/api/site");
   S.assetId = pickAsset();
-  if (!S.assetId) { toast("No assets are configured on this device yet.", "error"); return; }
+  if (!S.assetId) { showUnconfigured(); return; }
   S.config = await api("GET", `${A()}/config`);
   for (const t of S.config.tags) S.tags[t.name] = t;
   renderSiteHeader();

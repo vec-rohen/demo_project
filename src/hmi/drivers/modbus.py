@@ -11,6 +11,7 @@ Only coils and holding registers can be written.
 
 from __future__ import annotations
 
+import inspect
 import logging
 
 from pymodbus.client import AsyncModbusTcpClient
@@ -19,6 +20,10 @@ from ..tags import Tag, TagDatabase, TagError
 from .base import Driver, Value
 
 log = logging.getLogger(__name__)
+
+# pymodbus renamed the unit/slave id argument in 3.10. Older releases are what
+# Python 3.9 (Debian 11 based IoT2050 images) can install, so support both.
+_UNIT_KW = "device_id" if "device_id" in inspect.signature(AsyncModbusTcpClient.read_coils).parameters else "slave"
 
 READ_FN = {
     "coil": "read_coils",
@@ -79,7 +84,7 @@ class ModbusDriver(Driver):
         start = min(t.modbus["address"] for t in tags)
         end = max(t.modbus["address"] for t in tags)
         fn = getattr(self.client, READ_FN[table])
-        result = await fn(start, count=end - start + 1, device_id=self.unit)
+        result = await fn(start, count=end - start + 1, **{_UNIT_KW: self.unit})
         if result.isError():
             names = ", ".join(t.name for t in tags)
             raise IOError(f"{table} registers {start}–{end} ({names}): PLC returned {result}")
@@ -100,12 +105,12 @@ class ModbusDriver(Driver):
             raise TagError(f"{name} has no Modbus address")
         table, address = tag.modbus["table"], tag.modbus["address"]
         if table == "coil":
-            result = await self.client.write_coil(address, bool(value), device_id=self.unit)
+            result = await self.client.write_coil(address, bool(value), **{_UNIT_KW: self.unit})
         elif table == "holding":
             raw = int(round(float(value) * float(tag.modbus.get("scale", 1))))
             if not -0x8000 <= raw <= 0x7FFF:
                 raise TagError(f"{name}: scaled value {raw} does not fit a 16-bit register")
-            result = await self.client.write_register(address, raw & 0xFFFF, device_id=self.unit)
+            result = await self.client.write_register(address, raw & 0xFFFF, **{_UNIT_KW: self.unit})
         else:
             raise TagError(f"{name}: {table} registers are read-only")
         if result.isError():

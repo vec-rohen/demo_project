@@ -38,8 +38,8 @@ class SiteManager:
     # -- lifecycle --------------------------------------------------------------
     async def start(self) -> None:
         async with self._lock:
-            for asset in self.store.assets():
-                await self._start_asset(asset)
+            # In parallel: an unreachable PLC must not hold up the other assets.
+            await asyncio.gather(*(self._start_asset(a) for a in self.store.assets()))
         self._maintenance = asyncio.create_task(self._housekeeping(), name="housekeeping")
 
     async def stop(self) -> None:
@@ -60,8 +60,7 @@ class SiteManager:
         async with self._lock:
             for asset_id in list(self.runtimes):
                 await self._stop_asset(asset_id)
-            for asset in self.store.assets():
-                await self._start_asset(asset)
+            await asyncio.gather(*(self._start_asset(a) for a in self.store.assets()))
 
     def build_db(self, asset: dict[str, Any]) -> TagDatabase:
         plant = {"name": asset["name"], "description": asset.get("description", "")}

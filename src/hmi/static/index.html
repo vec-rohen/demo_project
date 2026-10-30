@@ -381,68 +381,6 @@
     </form>
   </dialog>
 
-  <dialog id="tag-dialog" class="wide-dialog" aria-labelledby="td-title">
-    <form id="tag-form" novalidate>
-      <h3 id="td-title">Edit I/O point</h3>
-      <div class="form-grid">
-        <div class="field"><label for="td-name">Tag name</label><input id="td-name" class="mono" required autocomplete="off" spellcheck="false"></div>
-        <div class="field span2"><label for="td-description">Description</label><input id="td-description" autocomplete="off"></div>
-        <div class="field"><label for="td-kind">Kind</label>
-          <select id="td-kind">
-            <option value="DI">DI – digital input</option><option value="DO">DO – digital output</option>
-            <option value="AI">AI – analog input</option><option value="AO">AO – analog output</option>
-            <option value="SP">SP – setpoint</option>
-          </select></div>
-        <div class="field"><label for="td-type">Value type</label>
-          <select id="td-type"><option value="bool">Digital (on/off)</option><option value="float">Analog (number)</option></select></div>
-        <div class="field analog-only"><label for="td-unit">Unit</label><input id="td-unit" autocomplete="off"></div>
-        <div class="field analog-only"><label for="td-decimals">Decimals</label><input id="td-decimals" type="number" min="0" max="6"></div>
-        <div class="field analog-only"><label for="td-min">Range min</label><input id="td-min" type="number" step="any" inputmode="decimal"></div>
-        <div class="field analog-only"><label for="td-max">Range max</label><input id="td-max" type="number" step="any" inputmode="decimal"></div>
-        <div class="field"><label for="td-role">Who may change it</label>
-          <select id="td-role"><option value="operator">Operator</option><option value="engineer">Engineer</option><option value="integrator">Integrator</option></select></div>
-      </div>
-      <label class="check"><input type="checkbox" id="td-writable"> Operators can write this point from the HMI</label>
-
-      <h4>Modbus address</h4>
-      <div class="form-grid">
-        <div class="field"><label for="td-table">Register type</label>
-          <select id="td-table">
-            <option value="">Not mapped</option>
-            <option value="coil">Coil (0x)</option><option value="discrete">Discrete input (1x)</option>
-            <option value="input">Input register (3x)</option><option value="holding">Holding register (4x)</option>
-          </select></div>
-        <div class="field"><label for="td-address">Address (0-based)</label><input id="td-address" type="number" min="0" max="65535" inputmode="numeric"></div>
-        <div class="field analog-only"><label for="td-scale">Scale (raw ÷)</label><input id="td-scale" type="number" step="any" min="0" inputmode="decimal"></div>
-      </div>
-
-      <h4>Alarm</h4>
-      <div class="form-grid digital-only">
-        <div class="field"><label for="td-alarm-state">Raise alarm when</label>
-          <select id="td-alarm-state"><option value="">No alarm</option><option value="true">ON</option><option value="false">OFF</option></select></div>
-        <div class="field"><label for="td-alarm-priority">Priority</label>
-          <select id="td-alarm-priority"><option value="high">High</option><option value="medium">Medium</option><option value="low">Low</option></select></div>
-        <div class="field span2"><label for="td-alarm-message">Alarm message</label><input id="td-alarm-message" autocomplete="off"></div>
-      </div>
-      <div class="form-grid analog-only">
-        <div class="field"><label for="td-alarm-hihi">High-high</label><input id="td-alarm-hihi" class="mono" autocomplete="off" placeholder="—"></div>
-        <div class="field"><label for="td-alarm-hi">High</label><input id="td-alarm-hi" class="mono" autocomplete="off" placeholder="—"></div>
-        <div class="field"><label for="td-alarm-lo">Low</label><input id="td-alarm-lo" class="mono" autocomplete="off" placeholder="—"></div>
-        <div class="field"><label for="td-alarm-lolo">Low-low</label><input id="td-alarm-lolo" class="mono" autocomplete="off" placeholder="—"></div>
-        <div class="field"><label for="td-alarm-deadband">Deadband</label><input id="td-alarm-deadband" type="number" step="any" min="0" inputmode="decimal"></div>
-      </div>
-      <p class="hint analog-only">A limit can be a number, or the name of a setpoint tag that holds it (e.g. SP_LevelHiAlarm).</p>
-
-      <p class="form-error" id="td-error" role="alert" hidden></p>
-      <div class="dialog-actions">
-        <button type="button" class="btn danger" id="td-delete">Delete point</button>
-        <span class="spacer"></span>
-        <button type="button" class="btn" id="td-cancel">Cancel</button>
-        <button class="btn primary">Save &amp; apply</button>
-      </div>
-    </form>
-  </dialog>
-
   <dialog id="changes-dialog" class="wide-dialog" aria-labelledby="cd-title">
     <h3 id="cd-title">Changes made on this device</h3>
     <p class="muted">Configuration edits made here on site. They're kept until the cloud portal picks them up, so nothing done during commissioning is lost.</p>
@@ -486,6 +424,8 @@
   </dialog>
   <div class="toasts" id="toasts" aria-live="polite"></div>
 
+  <script src="/static/common.js"></script>
+  <script src="/static/tagform.js"></script>
   <script src="/static/commission.js"></script>
   <script src="/static/app.js"></script>
 </body>

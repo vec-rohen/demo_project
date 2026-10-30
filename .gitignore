@@ -96,4 +96,5 @@ target/
 # /data/
 # Edge device database (configuration, password hashes, history)
 data/edge.db*
+data/cloud.db*
 data/hmi_users.json

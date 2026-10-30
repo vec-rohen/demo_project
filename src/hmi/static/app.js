@@ -33,20 +33,6 @@ const isDemoScreen = () => S.config?.asset?.screen === "tank-demo";
 const kpiTags = () => (isDemoScreen() ? DEMO_KPIS : Object.values(S.tags).filter((t) => t.kind === "AI").map((t) => t.name))
   .filter((n) => S.tags[n]);
 
-const $ = (sel, root = document) => root.querySelector(sel);
-const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
-const el = (tag, attrs = {}, ...children) => {
-  const node = document.createElement(tag);
-  for (const [k, v] of Object.entries(attrs)) {
-    if (k === "class") node.className = v;
-    else if (k === "text") node.textContent = v;
-    else if (k.startsWith("on")) node.addEventListener(k.slice(2), v);
-    else if (v !== undefined && v !== null && v !== false) node.setAttribute(k, v === true ? "" : v);
-  }
-  for (const c of children) if (c != null) node.append(c);
-  return node;
-};
-
 /* -------------------------------------------------------------- helpers */
 function fmt(name, value = S.values[name], withUnit = true) {
   const tag = S.tags[name];
@@ -66,7 +52,6 @@ const isAuto = () => !!S.values.SP_AutoMode;
 /* Mirrors the server's checks so controls are greyed out with a reason; the server still enforces them. */
 const can = (role) => !!S.me && !S.me.must_change_password &&
   ROLE_ORDER.indexOf(S.me.role) >= ROLE_ORDER.indexOf(role);
-const roleName = (r) => r.charAt(0).toUpperCase() + r.slice(1);
 function lockReason(tag) {
   const need = tag.role || "operator";
   if (S.me?.must_change_password) return "Change your password to make changes";
@@ -84,40 +69,6 @@ function alarmLimit(name, cond) {
   if (spec === undefined) return null;
   return typeof spec === "string" ? S.values[spec] : spec;
 }
-
-function toast(message, kind = "ok") {
-  const node = el("div", { class: `toast ${kind}`, role: kind === "error" ? "alert" : "status", text: message });
-  $("#toasts").append(node);
-  setTimeout(() => node.remove(), kind === "error" ? 6000 : 3000);
-}
-
-async function api(method, path, body) {
-  const res = await fetch(path, {
-    method,
-    headers: { "Content-Type": "application/json" },
-    body: body === undefined ? undefined : JSON.stringify(body),
-  });
-  const data = await res.json().catch(() => ({}));
-  if (res.status === 401 && path !== "/api/me/password") { location.replace("/login?expired=1"); throw new Error("Signed out"); }
-  if (!res.ok) {
-    const detail = Array.isArray(data.detail) // FastAPI validation errors arrive as a list
-      ? data.detail.map((d) => `${(d.loc || []).slice(1).join(".")}: ${d.msg}`).join("; ")
-      : data.detail;
-    throw new Error(detail || `${res.status} ${res.statusText}`);
-  }
-  return data;
-}
-
-function confirmChange(title, html) {
-  const dlg = $("#confirm");
-  $("#confirm-title").textContent = title;
-  $("#confirm-body").innerHTML = html;
-  dlg.returnValue = "";
-  dlg.showModal();
-  $("#confirm-ok").focus();
-  return new Promise((resolve) => dlg.addEventListener("close", () => resolve(dlg.returnValue === "ok"), { once: true }));
-}
-const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
 
 async function writeTag(name, value, { confirm = true } = {}) {
   const tag = S.tags[name];
@@ -937,11 +888,6 @@ async function userAction(method, username, body, message) {
   await refreshUsers();
 }
 
-function randomPassword() {
-  const alphabet = "abcdefghjkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-  const bytes = crypto.getRandomValues(new Uint8Array(12));
-  return [...bytes].map((b) => alphabet[b % alphabet.length]).join("");
-}
 
 function openUserDialog(existing) {
   const dlg = $("#user-dialog");

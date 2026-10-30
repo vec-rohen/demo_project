@@ -28,7 +28,6 @@ function initCommissioning() {
       buildIOTable();
     };
   }
-  initTagDialog();
 }
 
 async function loadCommission() {
@@ -312,140 +311,16 @@ function exportReport() {
 }
 
 /* --- edit / add an I/O point (integrators) */
-let editingTag = null;
-
-function initTagDialog() {
-  const dlg = $("#tag-dialog");
-  $("#td-cancel").onclick = () => dlg.close();
-  $("#td-type").onchange = syncTagFields;
-  $("#td-kind").onchange = () => {
-    // Default the value type from the kind; setpoints can be either.
-    const k = $("#td-kind").value;
-    if (k === "DI" || k === "DO") $("#td-type").value = "bool";
-    if (k === "AI" || k === "AO") $("#td-type").value = "float";
-    syncTagFields();
-  };
-  $("#td-delete").onclick = deleteTag;
-  $("#tag-form").addEventListener("submit", (e) => { e.preventDefault(); saveTag(); });
-}
-
-function syncTagFields() {
-  const analog = $("#td-type").value === "float";
-  for (const f of $$("#tag-dialog .analog-only")) f.hidden = !analog;
-  for (const f of $$("#tag-dialog .digital-only")) f.hidden = analog;
-}
-
 function openTagDialog(tag) {
-  editingTag = tag;
-  const t = tag || { name: "", kind: "AI", type: "float", decimals: 1, role: "operator" };
-  const set = (id, v) => { $(id).value = v ?? ""; };
-  $("#td-title").textContent = tag ? `Edit ${tag.name}` : "Add I/O point";
-  set("#td-name", t.name);
-  $("#td-name").readOnly = !!tag;
-  set("#td-description", t.description);
-  set("#td-kind", t.kind);
-  set("#td-type", t.type);
-  set("#td-unit", t.unit);
-  set("#td-decimals", t.decimals ?? 1);
-  set("#td-min", t.min);
-  set("#td-max", t.max);
-  set("#td-role", t.role || "operator");
-  $("#td-writable").checked = !!t.writable;
-  set("#td-table", t.modbus?.table);
-  set("#td-address", t.modbus?.address);
-  set("#td-scale", t.modbus?.scale ?? 1);
-  const al = t.alarm || {};
-  set("#td-alarm-state", t.type === "bool" && "state" in al ? String(al.state) : "");
-  set("#td-alarm-priority", al.priority || "medium");
-  set("#td-alarm-message", al.message);
-  for (const k of ["hihi", "hi", "lo", "lolo"]) set(`#td-alarm-${k}`, t.type === "float" ? al[k] : "");
-  set("#td-alarm-deadband", al.deadband);
-  $("#td-delete").hidden = !tag;
-  $("#td-error").hidden = true;
-  syncTagFields();
-  $("#tag-dialog").showModal();
-  (tag ? $("#td-description") : $("#td-name")).focus();
-}
-
-function readTagForm() {
-  const num = (id) => ($(id).value.trim() === "" ? undefined : Number($(id).value));
-  const type = $("#td-type").value;
-  const def = { ...(editingTag || {}) };
-  Object.assign(def, {
-    name: $("#td-name").value.trim(),
-    description: $("#td-description").value.trim(),
-    kind: $("#td-kind").value,
-    type,
-    role: $("#td-role").value,
-    writable: $("#td-writable").checked,
+  TagForm.open(tag, {
+    exists: (name) => C.tags.some((t) => t.name === name),
+    save: async (def, isNew) => {
+      await api("PUT", `${A()}/tags/${encodeURIComponent(def.name)}/definition`, def);
+      reloadWithMessage(`${def.name} ${isNew ? "added" : "updated"} – re-check it in the I/O list`);
+    },
+    remove: async (name) => {
+      await api("DELETE", `${A()}/tags/${encodeURIComponent(name)}`, {});
+      reloadWithMessage(`${name} deleted`);
+    },
   });
-  for (const key of ["unit", "min", "max", "decimals", "modbus", "alarm"]) delete def[key];
-  if (type === "float") {
-    if ($("#td-unit").value.trim()) def.unit = $("#td-unit").value.trim();
-    def.min = num("#td-min");
-    def.max = num("#td-max");
-    def.decimals = num("#td-decimals") ?? 1;
-  }
-  const table = $("#td-table").value;
-  if (table) {
-    def.modbus = { table, address: num("#td-address") };
-    if (type === "float") def.modbus.scale = num("#td-scale") ?? 1;
-  }
-  if (type === "bool") {
-    const state = $("#td-alarm-state").value;
-    if (state) {
-      def.alarm = { state: state === "true", priority: $("#td-alarm-priority").value,
-        message: $("#td-alarm-message").value.trim() || `${def.description || def.name} alarm` };
-    }
-  } else {
-    const alarm = {};
-    for (const k of ["hihi", "hi", "lo", "lolo"]) {
-      const raw = $(`#td-alarm-${k}`).value.trim();
-      if (raw) alarm[k] = Number.isFinite(Number(raw)) ? Number(raw) : raw;
-    }
-    if (Object.keys(alarm).length) {
-      const db = num("#td-alarm-deadband");
-      if (db !== undefined) alarm.deadband = db;
-      def.alarm = alarm;
-    }
-  }
-  for (const [k, v] of Object.entries(def)) if (v === undefined) delete def[k];
-  return def;
-}
-
-async function saveTag() {
-  const def = readTagForm();
-  const err = $("#td-error");
-  if (!def.name) { err.textContent = "Give the point a tag name."; err.hidden = false; return; }
-  if (def.modbus && !Number.isInteger(def.modbus.address)) {
-    err.textContent = "Enter the Modbus address, or set the register type to “Not mapped”.";
-    err.hidden = false;
-    return;
-  }
-  if (!editingTag && C.tags.some((t) => t.name === def.name)) {
-    err.textContent = `A point called ${def.name} already exists.`;
-    err.hidden = false;
-    return;
-  }
-  try {
-    await api("PUT", `${A()}/tags/${encodeURIComponent(def.name)}/definition`, def);
-  } catch (ex) {
-    err.textContent = ex.message;
-    err.hidden = false;
-    return;
-  }
-  $("#tag-dialog").close();
-  reloadWithMessage(`${def.name} ${editingTag ? "updated" : "added"} – re-check it in the I/O list`);
-}
-
-async function deleteTag() {
-  const name = editingTag.name;
-  $("#tag-dialog").close();
-  const ok = await confirmChange(`Delete ${name}?`,
-    "The point is removed from this asset's I/O, screens and trends. The change is logged for cloud sync.");
-  if (!ok) { $("#tag-dialog").showModal(); return; }
-  try {
-    await api("DELETE", `${A()}/tags/${encodeURIComponent(name)}`, {});
-    reloadWithMessage(`${name} deleted`);
-  } catch (err) { toast(err.message, "error"); }
 }

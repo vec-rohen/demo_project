@@ -1,10 +1,55 @@
-# PLC Web HMI – edge device
+# Plant HMI – cloud portal + edge devices
 
-The operator interface that runs on each site gateway (e.g. a Siemens IoT2050).
-It reads the PLC, runs alarms, keeps recent trends and serves the HMI on the
-local network, so authorised people can use it with **no internet
-connection**. A cloud portal (next step) will manage clients, sites, assets
-and users centrally and send each gateway only its own configuration.
+Two apps in one codebase:
+
+- **Cloud portal** (`src/cloud`) – your staff set up clients, sites, IoT2050
+  devices, assets, PLC connections, I/O and users, then publish a versioned
+  configuration package to each device.
+- **Edge HMI** (`src/hmi`) – runs on each site gateway (e.g. a Siemens
+  IoT2050). It reads the PLC, runs alarms, keeps recent trends and serves the
+  operator UI on the local network, so authorised people can use it with **no
+  internet connection**. It only ever holds its own client's data.
+
+Today packages move from portal to device as a file (download → load on the
+device). The next step links them: device enrolment, automatic config sync,
+uploading data and on-site changes, and remote viewing.
+
+## Cloud portal
+
+```bash
+python -m src.cloud                  # http://127.0.0.1:8100 (prints a one-time admin password)
+```
+
+Data lives in `data/cloud.db` (`--db` to change; git-ignored). Workflow:
+
+1. **Clients** → *New client* (contact details).
+2. On the client: **Add site** (address, time zone, days of trend history kept on the device),
+   **Add device** for each IoT2050 (name, serial, site).
+3. On the site: **Add asset** and pick the device it runs on. One device can run several
+   assets; a site can have several devices. **Duplicate** copies an asset with all its I/O.
+4. On the asset: set the **PLC connection** and define the **I/O** – add points in the
+   same editor the device uses, or **Import CSV** (*merge* or *replace*; the whole file is
+   checked first and nothing changes if any row is wrong). **CSV template** shows the columns;
+   **Export CSV** gives the current list.
+5. On the client: **Add user** for the client's people and set their **site access**
+   (viewer / operator / engineer per site). They get a temporary password and choose their
+   own the first time they sign in on site.
+6. On the device: the checklist shows what's missing; **Publish new version** (with a note)
+   once it's ready. Any later change flags the device as having unpublished changes.
+   **Download** a version and load it on the IoT2050 (Commissioning → *Load package…*, or
+   `python -m src.hmi --package file.json` on first start).
+
+Staff accounts (**Staff** page, admins only) sign in to the portal and are included in
+every package as **integrators**, so your technicians can commission and recover any
+device. Every portal change is recorded in the **Activity log**.
+
+I/O CSV columns: `name, description, kind (DI/DO/AI/AO/SP), type (bool/float), unit, min,
+max, decimals, writable (yes), role, modbus_table (coil/discrete/input/holding),
+modbus_address, modbus_scale, alarm_state (on/off), alarm_priority, alarm_message,
+alarm_hihi, alarm_hi, alarm_lo, alarm_lolo, alarm_deadband, manual_only`. Comma,
+semicolon or tab separated; Excel's UTF-8 or Windows encodings both work.
+
+# Edge HMI
 
 - **Overview** – live process mimic, or an automatic status overview for any asset, with key values, sparklines and active alarms.
 - **I/O** – every digital and analog point with state lamps, range bars and alarm-limit markers; toggle writable outputs.

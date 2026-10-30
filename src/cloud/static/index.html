@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Cloud Portal</title>
+  <meta name="theme-color" content="#242a33">
+  <link rel="stylesheet" href="/static/style.css">
+  <link rel="stylesheet" href="/portal/portal.css">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='3' fill='%23394150'/%3E%3Cpath d='M3 11h2V7h2v4h2V4h2v7h2' stroke='%238fb4ff' stroke-width='1.5' fill='none'/%3E%3C/svg%3E">
+  <script>
+    try { const t = localStorage.getItem("hmi-theme"); if (t) document.documentElement.dataset.theme = t; } catch {}
+  </script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark portal-mark" aria-hidden="true"></span>
+      <div>
+        <div class="brand-name">Plant Cloud Portal</div>
+        <div class="brand-sub">Clients · sites · devices · I/O</div>
+      </div>
+    </div>
+    <div class="status-strip">
+      <div class="user-menu">
+        <button class="chip user-chip" id="user-btn" aria-haspopup="menu" aria-expanded="false">
+          <span class="avatar" id="user-avatar" aria-hidden="true"></span>
+          <span id="user-name">…</span>
+          <span class="role-tag" id="user-role"></span>
+        </button>
+        <div class="menu" id="user-menu" role="menu" hidden>
+          <div class="menu-head" id="menu-head"></div>
+          <button role="menuitem" id="menu-password">Change password</button>
+          <button role="menuitem" id="menu-signout">Sign out</button>
+        </div>
+      </div>
+      <button class="icon-btn" id="theme-btn" title="Toggle light/dark theme" aria-label="Toggle theme"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><circle cx="8" cy="8" r="6.5" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M8 1.5a6.5 6.5 0 0 1 0 13z" fill="currentColor"/></svg></button>
+    </div>
+  </header>
+
+  <div class="portal-layout">
+    <nav class="sidenav" aria-label="Portal">
+      <a href="#/" data-nav="dashboard">Dashboard</a>
+      <a href="#/clients" data-nav="clients">Clients</a>
+      <a href="#/staff" data-nav="staff">Staff</a>
+      <a href="#/audit" data-nav="audit">Activity log</a>
+    </nav>
+    <main id="page" class="portal-main" tabindex="-1"></main>
+  </div>
+
+  <script src="/static/common.js"></script>
+  <script src="/static/tagform.js"></script>
+  <script src="/portal/portal.js"></script>
+</body>
+</html>

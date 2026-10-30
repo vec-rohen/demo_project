@@ -16,7 +16,9 @@ const S = {
   trendWindow: 300,
   eventFilter: "",
   hoverX: null,
+  me: null,            // signed-in user
 };
+const ROLE_ORDER = ["viewer", "operator", "engineer"];
 const HISTORY_SECONDS = 900;
 const PEN_COLORS = ["#4e9be6", "#e8875a", "#5fbf8f", "#c77dd6", "#d9b44a", "#6cc7d9", "#e46a8a", "#9aa0a8"];
 const KPI_TAGS = ["AI_TankLevel", "AI_TankTemp", "AI_InletFlow", "AI_OutletFlow", "AI_PumpPressure", "AI_MotorCurrent"];
@@ -51,6 +53,18 @@ const pct = (name, v = S.values[name]) => {
 const timeStr = (t) => new Date(t * 1000).toLocaleTimeString([], { hour12: false });
 const isAuto = () => !!S.values.SP_AutoMode;
 
+/* Mirrors the server's checks so controls are greyed out with a reason; the server still enforces them. */
+const can = (role) => !!S.me && !S.me.must_change_password &&
+  ROLE_ORDER.indexOf(S.me.role) >= ROLE_ORDER.indexOf(role);
+const roleName = (r) => r.charAt(0).toUpperCase() + r.slice(1);
+function lockReason(tag) {
+  const need = tag.role || "operator";
+  if (S.me?.must_change_password) return "Change your password to make changes";
+  if (!can(need)) return `${roleName(need)} role required`;
+  if (tag.manual_only && isAuto()) return "Controlled by PLC in Auto — switch to Manual to adjust";
+  return null;
+}
+
 function tagAlarm(name) {
   // Highest-priority *active* alarm on a tag, or null.
   return S.alarms.find((a) => a.tag === name && a.active) || null;
@@ -74,6 +88,7 @@ async function api(method, path, body) {
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   const data = await res.json().catch(() => ({}));
+  if (res.status === 401 && path !== "/api/me/password") { location.replace("/login?expired=1"); throw new Error("Signed out"); }
   if (!res.ok) throw new Error(data.detail || `${res.status} ${res.statusText}`);
   return data;
 }
@@ -117,7 +132,8 @@ function connect() {
   let retry = 1000;
   ws.onopen = () => { retry = 1000; };
   ws.onmessage = (msg) => applyUpdate(JSON.parse(msg.data));
-  ws.onclose = () => {
+  ws.onclose = (ev) => {
+    if (ev.code === 4401) { location.replace("/login?expired=1"); return; }
     S.connected = null; // web link down (distinct from PLC link down)
     renderStatus();
     setTimeout(connect, retry);
@@ -152,6 +168,7 @@ function renderAll() {
   if (S.tab === "setpoints") renderSetpoints();
   if (S.tab === "trends") renderTrend();
   if (S.tab === "alarms") renderAlarms();
+  if (S.tab === "users") renderUsers();
 }
 
 function renderStatus() {
@@ -283,7 +300,8 @@ function buildIO() {
     for (const tag of Object.values(S.tags).filter((t) => t.kind === kind)) {
       const action = el("td", { class: "io-act" });
       if (kind === "DI" && S.config.simulated_inputs) {
-        action.append(el("button", { class: "btn small sim-btn", text: "Sim", title: "Toggle this input in the simulator",
+        action.append(el("button", { class: "btn small sim-btn", text: "Sim", disabled: !can("engineer"),
+          title: can("engineer") ? "Toggle this input in the simulator" : "Engineer role required",
           onclick: () => simulateInput(tag.name) }));
       } else if (tag.writable && tag.type === "bool") {
         action.append(el("button", { class: "switch-btn", role: "switch", "aria-label": tag.description,
@@ -329,12 +347,12 @@ function renderIO() {
     const sw = $("[data-switch]", row);
     if (sw) {
       sw.setAttribute("aria-checked", String(!!v));
-      const locked = tag.manual_only && isAuto();
-      sw.disabled = locked;
-      sw.title = locked ? "Controlled by PLC in Auto — switch to Manual" : "";
+      const reason = lockReason(tag);
+      sw.disabled = !!reason;
+      sw.title = reason || "";
     }
     const set = $("[data-set]", row);
-    if (set) set.disabled = tag.manual_only && isAuto();
+    if (set) { const reason = lockReason(tag); set.disabled = !!reason; set.title = reason || ""; }
   }
 }
 
@@ -394,7 +412,7 @@ function spCard(tag) {
     el("div", { class: "sp-top" },
       el("span", { class: "sp-range", text: `Range ${tag.min} – ${tag.max} ${tag.unit}` }),
       el("span", { class: "sp-edit" }, reset, apply)),
-    el("div", { class: "sp-lock", hidden: true, text: "Controlled by PLC in Auto — switch to Manual to adjust" }));
+    el("div", { class: "sp-lock", hidden: true }));
 
   const markDirty = (v) => { card.dataset.dirty = "1"; card.classList.add("pending"); num.value = v; range.value = v; };
   const clean = () => { delete card.dataset.dirty; card.classList.remove("pending"); syncInputs(card, tag); };
@@ -417,7 +435,7 @@ function boolCard(tag) {
     el("div", { class: "sp-top" }, el("span", { class: "sp-title", text: tag.description }), el("span", { class: "sp-tag", text: tag.name })),
     el("div", { class: "sp-top" }, el("span", { class: "sp-live" }), sw),
     el("div", { class: "sp-pv" }),
-    el("div", { class: "sp-lock", hidden: true, text: "Controlled by PLC in Auto — switch to Manual to operate" }));
+    el("div", { class: "sp-lock", hidden: true }));
 }
 
 function syncInputs(card, tag) {
@@ -428,13 +446,21 @@ function syncInputs(card, tag) {
 }
 
 function renderSetpoints() {
-  for (const btn of $$("#mode-switch button")) btn.setAttribute("aria-checked", String((btn.dataset.mode === "true") === isAuto()));
+  const modeReason = lockReason(S.tags.SP_AutoMode || {});
+  for (const btn of $$("#mode-switch button")) {
+    btn.setAttribute("aria-checked", String((btn.dataset.mode === "true") === isAuto()));
+    btn.disabled = !!modeReason;
+    btn.title = modeReason || "";
+  }
   $("#manual-note").textContent = isAuto() ? "— locked items are driven by the PLC in Auto" : "";
   for (const card of $$("[data-sp]")) {
     const name = card.dataset.sp, tag = S.tags[name];
-    const locked = tag.manual_only && isAuto();
+    const reason = lockReason(tag);
+    const locked = !!reason;
     card.classList.toggle("locked", locked);
-    $(".sp-lock", card).hidden = !locked;
+    // Viewers already see a read-only banner; don't repeat it on every card.
+    $(".sp-lock", card).hidden = !locked || S.me.role === "viewer";
+    $(".sp-lock", card).textContent = reason || "";
     const live = $(".sp-live", card);
     live.textContent = fmt(name, undefined, false);
     if (tag.type !== "bool") live.append(el("small", { text: tag.unit }));
@@ -580,13 +606,14 @@ function renderAlarms() {
       el("td", { class: "mono", text: a.limit == null ? "—" : fmt(a.tag, a.limit) }),
       el("td", { class: "state", text: state }),
       el("td", { class: "io-act" }, a.acked ? null :
-        el("button", { class: "btn small", text: "Ack", onclick: () => ack(a.id) })));
+        el("button", { class: "btn small", text: "Ack", disabled: !can("operator"),
+          title: can("operator") ? "" : "Operator role required", onclick: () => ack(a.id) })));
   }));
   $("#alarm-empty").hidden = S.alarms.length > 0;
-  $("#ack-all").disabled = !S.alarms.some((a) => !a.acked);
+  $("#ack-all").disabled = !can("operator") || !S.alarms.some((a) => !a.acked);
 
   const filter = S.eventFilter;
-  const kinds = { alarm: ["alarm", "clear", "ack"], write: ["write", "sim"], system: ["system"] };
+  const kinds = { alarm: ["alarm", "clear", "ack"], write: ["write", "sim"], auth: ["auth"], system: ["system"] };
   const events = S.events.filter((e) => !filter || kinds[filter].includes(e.kind)).slice(-300).reverse();
   const tbody = $("#event-table tbody");
   if (tbody.dataset.sig === `${filter}:${S.lastSeq}`) return; // nothing new
@@ -602,8 +629,238 @@ async function ack(id) {
   try { await api("POST", "/api/alarms/ack", { id }); } catch (err) { toast(err.message, "error"); }
 }
 
+/* ------------------------------------------------------------- account */
+function initAccount() {
+  const me = S.me;
+  $("#user-name").textContent = me.full_name || me.username;
+  $("#user-avatar").textContent = (me.full_name || me.username).split(/\s+/).map((w) => w[0]).join("").slice(0, 2);
+  const role = $("#user-role");
+  role.textContent = me.role;
+  role.className = `role-tag ${me.role}`;
+  $("#menu-head").replaceChildren(el("b", { text: me.full_name || me.username }),
+    el("span", { text: `${me.username} · ${roleName(me.role)}` }));
+  $("#users-tab").hidden = me.role !== "engineer";
+  const strip = $("#readonly-strip");
+  strip.hidden = me.role !== "viewer";
+  strip.textContent = "You're signed in as a viewer: you can monitor everything but can't make changes.";
+
+  const btn = $("#user-btn"), menu = $("#user-menu");
+  const close = () => { menu.hidden = true; btn.setAttribute("aria-expanded", "false"); };
+  btn.onclick = (e) => {
+    e.stopPropagation();
+    menu.hidden = !menu.hidden;
+    btn.setAttribute("aria-expanded", String(!menu.hidden));
+    if (!menu.hidden) $("button", menu).focus();
+  };
+  document.addEventListener("click", (e) => { if (!menu.contains(e.target)) close(); });
+  menu.addEventListener("keydown", (e) => { if (e.key === "Escape") { close(); btn.focus(); } });
+  $("#menu-password").onclick = () => { close(); openPasswordDialog(false); };
+  $("#menu-signout").onclick = signOut;
+
+  initPasswordDialog();
+  if (me.must_change_password) openPasswordDialog(true);
+  trackActivity();
+}
+
+async function signOut() {
+  try { await api("POST", "/api/logout", {}); } catch { /* already signed out */ }
+  location.replace("/login?signedout=1");
+}
+
+function initPasswordDialog() {
+  const dlg = $("#pw-dialog");
+  $("#pw-cancel").onclick = () => dlg.close();
+  $("#pw-signout").onclick = signOut;
+  dlg.addEventListener("cancel", (e) => { if (dlg.dataset.forced) e.preventDefault(); });
+  $("#pw-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const err = $("#pw-error");
+    const current = $("#pw-current").value, next = $("#pw-new").value;
+    const show = (msg) => { err.textContent = msg; err.hidden = false; };
+    if (next.length < 8) return show("The new password must be at least 8 characters.");
+    if (next !== $("#pw-repeat").value) return show("The new passwords don't match.");
+    try {
+      await api("POST", "/api/me/password", { current, new: next });
+    } catch (ex) {
+      return show(ex.message);
+    }
+    S.me.must_change_password = false;
+    delete dlg.dataset.forced;
+    dlg.close();
+    toast("Password changed");
+    renderAll();
+    if (S.config) { buildIO(); renderAll(); }
+  });
+}
+
+function openPasswordDialog(forced) {
+  const dlg = $("#pw-dialog");
+  $("#pw-form").reset();
+  $("#pw-error").hidden = true;
+  $("#pw-form [name=username]").value = S.me.username;
+  $("#pw-title").textContent = forced ? "Choose a new password" : "Change password";
+  $("#pw-intro").textContent = forced
+    ? "Your password was set by an administrator. Choose your own before you continue."
+    : "";
+  $("#pw-intro").hidden = !forced;
+  $("#pw-cancel").hidden = forced;
+  $("#pw-signout").hidden = !forced;
+  if (forced) dlg.dataset.forced = "1"; else delete dlg.dataset.forced;
+  dlg.showModal();
+  $("#pw-current").focus();
+}
+
+// The server signs a session out after a period without interaction. Tell it
+// when the operator is active, and warn shortly before the timeout.
+function trackActivity() {
+  const timeout = S.me.idle_timeout;
+  if (!timeout) return;
+  let last = Date.now(), lastPing = Date.now(), warned = false;
+  const onActivity = () => {
+    last = Date.now();
+    warned = false;
+    if (Date.now() - lastPing > 60_000) {
+      lastPing = Date.now();
+      api("POST", "/api/me/ping", {}).catch(() => {});
+    }
+  };
+  for (const ev of ["pointerdown", "keydown", "wheel", "touchstart"]) {
+    window.addEventListener(ev, onActivity, { passive: true });
+  }
+  setInterval(() => {
+    const left = timeout * 1000 - (Date.now() - last);
+    if (left < 60_000 && !warned) {
+      warned = true;
+      toast("You'll be signed out in about a minute due to inactivity. Click anywhere to stay signed in.", "error");
+    }
+  }, 5000);
+}
+
+/* --- user administration (engineers) */
+let usersCache = [];
+
+async function renderUsers() {
+  if (renderUsers.busy) return;
+  // Only refetch occasionally: this runs on every live-data update.
+  if (renderUsers.fetched && Date.now() - renderUsers.fetched < 15000) return;
+  renderUsers.busy = true;
+  try {
+    usersCache = await api("GET", "/api/users");
+    renderUsers.fetched = Date.now();
+    drawUsers();
+  } catch (err) {
+    toast(err.message, "error");
+  } finally {
+    renderUsers.busy = false;
+  }
+}
+const refreshUsers = () => { renderUsers.fetched = 0; return renderUsers(); };
+
+function drawUsers() {
+  const body = $("#users-table tbody");
+  body.replaceChildren(...usersCache.map((u) => {
+    const self = u.username === S.me.username;
+    const roleSel = el("select", { "aria-label": `Role for ${u.username}`, disabled: self,
+      title: self ? "You can't change your own role" : "" },
+    ...ROLE_ORDER.map((r) => el("option", { value: r, text: roleName(r), selected: r === u.role })));
+    roleSel.onchange = async () => {
+      const ok = await confirmChange(`Change role for ${u.username}?`,
+        `<span class="change">${esc(roleName(u.role))} → ${esc(roleName(roleSel.value))}</span><br>` +
+        `<span class="muted">They will be signed out so the change takes effect.</span>`);
+      if (!ok) { roleSel.value = u.role; return; }
+      await userAction("PATCH", u.username, { role: roleSel.value }, `${u.username} is now ${roleName(roleSel.value)}`);
+    };
+    const status = u.disabled ? el("span", { class: "status-tag off", text: "Disabled" })
+      : u.must_change_password ? el("span", { class: "status-tag pending", text: "Password change pending" })
+        : el("span", { class: "status-tag", text: "Active" });
+    const actions = el("td", { class: "actions" },
+      el("button", { class: "btn small", text: "Reset password", onclick: () => openUserDialog(u) }),
+      el("button", { class: "btn small", text: u.disabled ? "Enable" : "Disable", disabled: self,
+        onclick: async () => {
+          const verb = u.disabled ? "Enable" : "Disable";
+          if (!(await confirmChange(`${verb} ${u.username}?`, u.disabled
+            ? "They will be able to sign in again."
+            : "They will be signed out immediately and won't be able to sign in."))) return;
+          await userAction("PATCH", u.username, { disabled: !u.disabled }, `${u.username} ${verb.toLowerCase()}d`);
+        } }),
+      el("button", { class: "btn small danger", text: "Delete", disabled: self,
+        onclick: async () => {
+          if (!(await confirmChange(`Delete ${u.username}?`,
+            "This removes the account permanently. Their past actions stay in the event journal."))) return;
+          await userAction("DELETE", u.username, undefined, `${u.username} deleted`);
+        } }));
+    return el("tr", {},
+      el("td", {}, el("div", {}, el("b", { text: u.username }), self ? el("span", { class: "you", text: "(you)" }) : null),
+        el("div", { class: "muted", text: u.full_name || "" })),
+      el("td", {}, roleSel),
+      el("td", {}, status),
+      el("td", { class: "time", text: u.last_login ? new Date(u.last_login * 1000).toLocaleString([], { hour12: false }) : "Never" }),
+      actions);
+  }));
+}
+
+async function userAction(method, username, body, message) {
+  try {
+    await api(method, `/api/users/${encodeURIComponent(username)}`, body ?? {});
+    toast(message);
+  } catch (err) {
+    toast(err.message, "error");
+  }
+  await refreshUsers();
+}
+
+function randomPassword() {
+  const alphabet = "abcdefghjkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  const bytes = crypto.getRandomValues(new Uint8Array(12));
+  return [...bytes].map((b) => alphabet[b % alphabet.length]).join("");
+}
+
+function openUserDialog(existing) {
+  const dlg = $("#user-dialog");
+  $("#user-form").reset();
+  $("#ud-error").hidden = true;
+  dlg.dataset.username = existing ? existing.username : "";
+  $("#ud-title").textContent = existing ? `Reset password for ${existing.username}` : "Add user";
+  $("#ud-submit").textContent = existing ? "Reset password" : "Create user";
+  $("#ud-new-fields").hidden = !!existing;
+  $("#ud-password").value = randomPassword();
+  dlg.showModal();
+  (existing ? $("#ud-password") : $("#ud-username")).focus();
+}
+
+function initUserAdmin() {
+  const dlg = $("#user-dialog");
+  $("#add-user-btn").onclick = () => openUserDialog(null);
+  $("#ud-cancel").onclick = () => dlg.close();
+  $("#ud-generate").onclick = () => { $("#ud-password").value = randomPassword(); };
+  $("#user-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const err = $("#ud-error");
+    const password = $("#ud-password").value;
+    const existing = dlg.dataset.username;
+    const show = (msg) => { err.textContent = msg; err.hidden = false; };
+    if (password.length < 8) return show("The password must be at least 8 characters.");
+    try {
+      if (existing) {
+        await api("PATCH", `/api/users/${encodeURIComponent(existing)}`, { password });
+        toast(`Password reset for ${existing}. They'll choose a new one at next sign-in.`);
+      } else {
+        const username = $("#ud-username").value.trim().toLowerCase();
+        if (!/^[a-z0-9_.-]{2,32}$/.test(username)) return show("Usernames are 2–32 lowercase letters, digits, dot, dash or underscore.");
+        await api("POST", "/api/users", { username, password, role: $("#ud-role").value, full_name: $("#ud-name").value });
+        toast(`User ${username} created`);
+      }
+    } catch (ex) {
+      return show(ex.message);
+    }
+    dlg.close();
+    refreshUsers();
+  });
+}
+
 /* ------------------------------------------------------------- startup */
 function selectTab(tab) {
+  if (!$(`.tabs [data-tab="${tab}"]`) || $(`.tabs [data-tab="${tab}"]`).hidden) tab = "overview";
   S.tab = tab;
   for (const b of $$(".tabs button")) b.setAttribute("aria-selected", String(b.dataset.tab === tab));
   for (const v of $$(".view")) v.hidden = v.id !== `view-${tab}`;
@@ -626,6 +883,8 @@ function initTheme() {
 async function init() {
   initTheme();
   setInterval(() => { $("#clock").textContent = new Date().toLocaleTimeString([], { hour12: false }); }, 1000);
+  S.me = await api("GET", "/api/me");
+  initAccount();
   S.config = await api("GET", "/api/config");
   for (const t of S.config.tags) S.tags[t.name] = t;
   $("#plant-name").textContent = S.config.plant.name || "Plant HMI";
@@ -640,6 +899,7 @@ async function init() {
   buildIO();
   buildSetpoints();
   buildTrendPicker();
+  if (S.me.role === "engineer") initUserAdmin();
 
   for (const b of $$(".tabs button")) b.onclick = () => selectTab(b.dataset.tab);
   for (const b of $$("[data-goto]")) b.onclick = () => selectTab(b.dataset.goto);

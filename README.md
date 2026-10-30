@@ -21,7 +21,32 @@ python -m src.hmi --driver modbus --plc 192.168.1.10  # a real PLC over Modbus T
 
 Then browse to http://127.0.0.1:8000. Use `--host 0.0.0.0` to serve other
 machines on the network. With the simulator, the **Sim** buttons on the I/O page
-force inputs (E-stop, door switch…) so you can exercise alarms and interlocks.
+force inputs (E-stop, door switch…) so engineers can exercise alarms and interlocks.
+
+## Sign-in and roles
+
+On first start, when no accounts exist, the server prints a one-time password
+for an `admin` engineer account. Sign in with it and you'll be asked to choose
+your own password straight away. Then add your users on the **Users** tab.
+
+| Role | Can do |
+|------|--------|
+| Viewer | See every screen, trend and alarm. Read-only. |
+| Operator | Change setpoints and outputs, switch Auto/Manual, acknowledge alarms. |
+| Engineer | Everything above, plus alarm limits, loop tuning (tags marked `"role": "engineer"` in `tags.json`), simulator inputs and user management. |
+
+- New accounts and admin password resets get a temporary password; the user must replace it at their next sign-in.
+- Sessions end after 30 minutes without interaction (`HMI_IDLE_MINUTES`, `0` disables). Users get a warning a minute beforehand.
+- Five wrong passwords lock that username for a minute.
+- Every sign-in, sign-out and account change is recorded in the event journal, and every operator action is logged under the signed-in user.
+- Accounts are stored in `data/hmi_users.json` (`HMI_USERS` to change), with scrypt password hashes. The file is git-ignored.
+- Locked out? Manage accounts from the server's command line:
+
+  ```bash
+  python -m src.hmi.users list
+  python -m src.hmi.users passwd admin
+  python -m src.hmi.users add alice --role operator --name "Alice Smith"
+  ```
 
 ## Connecting your PLC
 
@@ -49,11 +74,14 @@ browser ──WebSocket /ws (4 Hz)──▶ FastAPI ── Runtime (poll, alarms
 ```
 
 REST: `GET /api/config`, `GET /api/state`, `GET /api/history`,
-`POST /api/tags/{name}`, `POST /api/alarms/ack`, `POST /api/simulate/{name}`.
+`POST /api/tags/{name}`, `POST /api/alarms/ack`, `POST /api/simulate/{name}`,
+`POST /api/login`, `POST /api/logout`, `GET /api/me`, `POST /api/me/password`,
+`GET|POST /api/users`, `PATCH|DELETE /api/users/{name}`.
 
-> **Security:** there is no login yet; the server listens on localhost by
-> default. Put it behind authentication (reverse proxy / VPN) before exposing
-> write access on a plant network.
+> **Security:** the session cookie is HttpOnly and SameSite=Strict, but the
+> server itself speaks plain HTTP. When serving beyond localhost, put it behind
+> HTTPS (a reverse proxy such as Caddy or nginx) and set `HMI_SECURE_COOKIES=1`
+> so passwords and session cookies never cross the network unencrypted.
 
 Run the tests with `python -m pytest tests`.
 

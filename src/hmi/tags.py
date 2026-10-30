@@ -26,6 +26,7 @@ class Tag:
     decimals: int = 1
     writable: bool = False
     manual_only: bool = False
+    role: str = "operator"  # minimum role allowed to write this tag
     alarm: dict[str, Any] | None = None
     modbus: dict[str, Any] | None = None
 
@@ -64,6 +65,7 @@ class Tag:
             "decimals": self.decimals,
             "writable": self.writable,
             "manual_only": self.manual_only,
+            "role": self.role,
             "alarm": self.alarm,
         }
 

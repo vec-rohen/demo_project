@@ -20,6 +20,18 @@
       <span class="chip" id="conn-chip"><span class="dot"></span><span id="conn-text">Connecting…</span></span>
       <span class="chip" id="mode-chip">—</span>
       <span class="chip mono" id="clock">--:--:--</span>
+      <div class="user-menu">
+        <button class="chip user-chip" id="user-btn" aria-haspopup="menu" aria-expanded="false">
+          <span class="avatar" id="user-avatar" aria-hidden="true"></span>
+          <span id="user-name">…</span>
+          <span class="role-tag" id="user-role"></span>
+        </button>
+        <div class="menu" id="user-menu" role="menu" hidden>
+          <div class="menu-head" id="menu-head"></div>
+          <button role="menuitem" id="menu-password">Change password</button>
+          <button role="menuitem" id="menu-signout">Sign out</button>
+        </div>
+      </div>
       <button class="icon-btn" id="theme-btn" title="Toggle light/dark theme" aria-label="Toggle theme"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><circle cx="8" cy="8" r="6.5" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M8 1.5a6.5 6.5 0 0 1 0 13z" fill="currentColor"/></svg></button>
     </div>
   </header>
@@ -36,7 +48,10 @@
     <button role="tab" data-tab="setpoints">Setpoints &amp; Control</button>
     <button role="tab" data-tab="trends">Trends</button>
     <button role="tab" data-tab="alarms">Alarms &amp; Events <span class="badge" id="alarm-tab-badge" hidden>0</span></button>
+    <button role="tab" data-tab="users" id="users-tab" hidden>Users</button>
   </nav>
+
+  <div class="readonly-strip" id="readonly-strip" hidden></div>
 
   <main>
     <!-- OVERVIEW -->
@@ -193,6 +208,7 @@
             <button data-filter="" aria-pressed="true">All</button>
             <button data-filter="alarm">Alarms</button>
             <button data-filter="write">Operator</button>
+            <button data-filter="auth">Sign-ins</button>
             <button data-filter="system">System</button>
           </div>
         </div>
@@ -204,7 +220,75 @@
         </div>
       </div>
     </section>
+    <!-- USERS (engineers) -->
+    <section class="view" id="view-users" hidden>
+      <div class="panel">
+        <div class="panel-head"><h2>User accounts</h2><button class="btn primary" id="add-user-btn">Add user</button></div>
+        <div class="table-scroll">
+          <table class="data-table" id="users-table">
+            <thead><tr><th>User</th><th>Role</th><th>Status</th><th>Last sign-in</th><th class="io-act">Actions</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+      <div class="role-grid">
+        <div class="role-card"><span class="role-tag viewer">Viewer</span><p>Sees every screen, trend and alarm. Can't change anything.</p></div>
+        <div class="role-card"><span class="role-tag operator">Operator</span><p>Changes setpoints and outputs, switches Auto/Manual and acknowledges alarms.</p></div>
+        <div class="role-card"><span class="role-tag engineer">Engineer</span><p>Everything an operator can do, plus alarm limits, loop tuning, simulator inputs and managing users.</p></div>
+      </div>
+    </section>
   </main>
+
+  <dialog id="pw-dialog" aria-labelledby="pw-title">
+    <form id="pw-form" novalidate>
+      <h3 id="pw-title">Change password</h3>
+      <p class="muted" id="pw-intro"></p>
+      <input type="text" name="username" autocomplete="username" hidden>
+      <label for="pw-current">Current password</label>
+      <input id="pw-current" type="password" autocomplete="current-password" required>
+      <label for="pw-new">New password</label>
+      <input id="pw-new" type="password" autocomplete="new-password" minlength="8" required>
+      <label for="pw-repeat">Repeat new password</label>
+      <input id="pw-repeat" type="password" autocomplete="new-password" minlength="8" required>
+      <p class="hint">At least 8 characters.</p>
+      <p class="form-error" id="pw-error" role="alert" hidden></p>
+      <div class="dialog-actions">
+        <button type="button" class="btn" id="pw-cancel">Cancel</button>
+        <button type="button" class="btn" id="pw-signout" hidden>Sign out</button>
+        <button class="btn primary">Change password</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="user-dialog" aria-labelledby="ud-title">
+    <form id="user-form" novalidate>
+      <h3 id="ud-title">Add user</h3>
+      <div id="ud-new-fields">
+        <label for="ud-username">Username</label>
+        <input id="ud-username" autocomplete="off" autocapitalize="none" spellcheck="false" required pattern="[a-z0-9_.\-]{2,32}">
+        <p class="hint">Lowercase letters, digits, dot, dash or underscore.</p>
+        <label for="ud-name">Full name</label>
+        <input id="ud-name" autocomplete="off">
+        <label for="ud-role">Role</label>
+        <select id="ud-role">
+          <option value="viewer">Viewer – read only</option>
+          <option value="operator" selected>Operator – run the plant</option>
+          <option value="engineer">Engineer – full access</option>
+        </select>
+      </div>
+      <label for="ud-password">Temporary password</label>
+      <div class="pw-field">
+        <input id="ud-password" autocomplete="new-password" minlength="8" required class="mono">
+        <button type="button" class="pw-toggle" id="ud-generate">Generate</button>
+      </div>
+      <p class="hint">Give this to the user. They'll choose their own password when they first sign in.</p>
+      <p class="form-error" id="ud-error" role="alert" hidden></p>
+      <div class="dialog-actions">
+        <button type="button" class="btn" id="ud-cancel">Cancel</button>
+        <button class="btn primary" id="ud-submit">Create user</button>
+      </div>
+    </form>
+  </dialog>
 
   <dialog id="confirm">
     <form method="dialog">

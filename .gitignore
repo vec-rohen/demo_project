@@ -94,3 +94,5 @@ target/
 
 # exclude data from source control by default
 # /data/
+# HMI user accounts (password hashes)
+data/hmi_users.json

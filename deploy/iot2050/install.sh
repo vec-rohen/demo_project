@@ -61,7 +61,9 @@ if [ "$UNINSTALL" -eq 1 ]; then
   if [ "$PURGE" -eq 1 ]; then
     say "Deleting all data in $DATA_DIR"
     rm -rf "$DATA_DIR"
-    id "$SVC_USER" >/dev/null 2>&1 && userdel "$SVC_USER" || true
+    if id "$SVC_USER" >/dev/null 2>&1; then
+      userdel "$SVC_USER" || echo "    Couldn't remove the $SVC_USER account (still in use?); remove it later with: userdel $SVC_USER"
+    fi
   else
     say "App removed. Data kept in $DATA_DIR (use --purge to delete it)."
   fi

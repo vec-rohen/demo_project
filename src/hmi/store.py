@@ -58,6 +58,13 @@ class Store:
                 self._db.execute("PRAGMA journal_mode=WAL")
             self._db.execute("PRAGMA synchronous=NORMAL")
             self._db.executescript(SCHEMA)
+            self._migrate()
+
+    def _migrate(self) -> None:
+        """Bring databases created by older versions up to date."""
+        columns = {r["name"] for r in self._db.execute("PRAGMA table_info(assets)")}
+        if "mode_tag" not in columns:
+            self._db.execute("ALTER TABLE assets ADD COLUMN mode_tag TEXT")
 
     def data_version(self) -> int:
         """Changes whenever *another* connection (e.g. the command-line tools) commits."""
@@ -104,7 +111,7 @@ class Store:
     @staticmethod
     def _asset(row: sqlite3.Row) -> dict[str, Any]:
         return {"id": row["id"], "name": row["name"], "description": row["description"],
-                "plc": json.loads(row["plc"]), "screen": row["screen"]}
+                "plc": json.loads(row["plc"]), "screen": row["screen"], "mode_tag": row["mode_tag"]}
 
     def assets(self) -> list[dict[str, Any]]:
         return [self._asset(r) for r in self._q("SELECT * FROM assets ORDER BY position, id")]
@@ -114,11 +121,11 @@ class Store:
         return self._asset(rows[0]) if rows else None
 
     def save_asset(self, asset: dict[str, Any], position: int = 0) -> None:
-        self._q("""INSERT INTO assets (id, name, description, plc, screen, position) VALUES (?, ?, ?, ?, ?, ?)
+        self._q("""INSERT INTO assets (id, name, description, plc, screen, mode_tag, position) VALUES (?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(id) DO UPDATE SET name = excluded.name, description = excluded.description,
-                   plc = excluded.plc, screen = excluded.screen""",
+                   plc = excluded.plc, screen = excluded.screen, mode_tag = excluded.mode_tag""",
                 (asset["id"], asset["name"], asset.get("description", ""), json.dumps(asset.get("plc", {})),
-                 asset.get("screen", "auto"), position))
+                 asset.get("screen", "auto"), asset.get("mode_tag"), position))
 
     def tags(self, asset_id: str) -> list[dict[str, Any]]:
         return [json.loads(r["def"]) for r in
@@ -224,9 +231,11 @@ class Store:
             # Commissioning results survive a package update for assets that still exist.
             self._db.execute(f"DELETE FROM io_checks WHERE asset_id NOT IN ({','.join('?' * len(keep))})", keep)
             for pos, asset in enumerate(assets):
-                self._db.execute("INSERT INTO assets (id, name, description, plc, screen, position) VALUES (?, ?, ?, ?, ?, ?)",
+                self._db.execute("INSERT INTO assets (id, name, description, plc, screen, mode_tag, position) "
+                                 "VALUES (?, ?, ?, ?, ?, ?, ?)",
                                  (asset["id"], asset["name"], asset.get("description", ""),
-                                  json.dumps(asset.get("plc", {})), asset.get("screen", "auto"), pos))
+                                  json.dumps(asset.get("plc", {})), asset.get("screen", "auto"),
+                                  asset.get("mode_tag"), pos))
                 for tpos, tag in enumerate(asset.get("tags", [])):
                     self._db.execute("INSERT INTO tags (asset_id, name, def, position) VALUES (?, ?, ?, ?)",
                                      (asset["id"], tag["name"], json.dumps(tag), tpos))

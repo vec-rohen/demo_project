@@ -499,3 +499,12 @@ label.check { display: flex; gap: 8px; align-items: center; color: var(--text); 
 .setup-steps { margin: 12px 0 16px; padding-left: 20px; line-height: 1.7; }
 .setup-panel .facts { margin-top: 18px; }
 nav.tabs[hidden] { display: none; }
+
+/* --- stale data: PLC or device unreachable ----------------------------- */
+.stale-strip { padding: 8px 20px; font-size: 13px; font-weight: 600; color: var(--alarm-medium);
+  background: color-mix(in srgb, var(--alarm-medium) 14%, var(--panel)); border-bottom: 1px solid var(--line); }
+.stale-strip[hidden] { display: none; }
+body.stale .io-val, body.stale .kpi-val, body.stale .mimic-value, body.stale .tank-level, body.stale .sp-live,
+body.stale [data-live], body.stale .pen-val, body.stale .lamp, body.stale #mimic, body.stale .kpi canvas {
+  opacity: .4; }
+body.stale .io-val::after, body.stale .kpi-val::after { content: " ?"; color: var(--alarm-medium); }

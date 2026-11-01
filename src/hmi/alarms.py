@@ -98,6 +98,8 @@ class AlarmManager:
     def evaluate(self, values: dict[str, Any], now: float | None = None) -> None:
         now = time.time() if now is None else now
         for alarm in self.alarms.values():
+            if alarm.condition == "system":
+                continue  # raised by the runtime itself (e.g. PLC communication lost)
             tag = self.db.tags[alarm.tag]
             value = values.get(alarm.tag)
             if value is None:
@@ -125,6 +127,22 @@ class AlarmManager:
                 alarm.active, alarm.cleared_at = False, now
                 self.events.add("clear", f"{alarm.message} returned to normal", alarm=alarm.id, asset=self.asset_id,
                                 tag=alarm.tag, value=value)
+
+    def set_system(self, alarm_id: str, active: bool, message: str, priority: str = "high",
+                   now: float | None = None) -> None:
+        """Raise or clear an alarm that isn't tied to a tag value."""
+        now = time.time() if now is None else now
+        alarm = self.alarms.get(alarm_id)
+        if alarm is None:
+            if not active:
+                return
+            alarm = self.alarms[alarm_id] = Alarm(alarm_id, "", "system", priority, message)
+        if active and not alarm.active:
+            alarm.active, alarm.acked, alarm.raised_at, alarm.cleared_at = True, False, now, None
+            self.events.add("alarm", message, alarm=alarm_id, priority=priority, asset=self.asset_id)
+        elif not active and alarm.active:
+            alarm.active, alarm.cleared_at = False, now
+            self.events.add("clear", f"{message} – returned to normal", alarm=alarm_id, asset=self.asset_id)
 
     def acknowledge(self, alarm_id: str | None, user: str) -> int:
         """Acknowledge one alarm, or every unacknowledged alarm when ``alarm_id`` is None."""

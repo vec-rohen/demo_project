@@ -4,9 +4,13 @@ Each tag's ``modbus`` block in ``tags.json`` maps it to a register:
 
 * ``table``: ``coil`` (0x), ``discrete`` (1x), ``input`` (3x) or ``holding`` (4x)
 * ``address``: zero-based register/bit address
-* ``scale``: (analog only) engineering value = signed 16-bit raw / scale
+* ``type``: register data type – int16 (default), uint16, int32, uint32, float32
+* ``word_order``: big (default, high word first) or little, for 32-bit types
+* ``bit``: 0–15, for a digital tag that is one bit of an input/holding register
+* ``scale``: (analog only) engineering value = raw value / scale
 
-Only coils and holding registers can be written.
+Only coils and holding registers can be written. Reads are batched to stay
+within the protocol's 125-register / 2000-bit request limits.
 """
 
 from __future__ import annotations
@@ -18,6 +22,7 @@ from pymodbus.client import AsyncModbusTcpClient
 
 from ..tags import Tag, TagDatabase, TagError
 from .base import Driver, Value
+from .codec import batches, decode, encode, register_count
 
 log = logging.getLogger(__name__)
 
@@ -33,8 +38,8 @@ READ_FN = {
 }
 
 
-def _to_signed(raw: int) -> int:
-    return raw - 0x10000 if raw & 0x8000 else raw
+MAX_REGISTERS = 120   # protocol limit is 125 per request; keep a margin
+MAX_BITS = 1900       # protocol limit is 2000
 
 
 class ModbusDriver(Driver):
@@ -79,38 +84,67 @@ class ModbusDriver(Driver):
             grouped.setdefault(tag.modbus["table"], []).append(tag)
         return grouped
 
+    @staticmethod
+    def _width(tag: Tag) -> int:
+        """How many registers (or bits) the tag occupies."""
+        if tag.modbus["table"] in ("coil", "discrete") or tag.type == "bool":
+            return 1
+        return register_count(tag.modbus.get("type", "int16"))
+
     async def _read_table(self, table: str, tags: list[Tag]) -> None:
-        """Read one contiguous block covering every tag in a table."""
-        start = min(t.modbus["address"] for t in tags)
-        end = max(t.modbus["address"] for t in tags)
+        """Read a table in as few requests as the protocol allows (125 registers / 2000 bits each)."""
+        limit = MAX_BITS if table in ("coil", "discrete") else MAX_REGISTERS
+        spans = [(t.modbus["address"], self._width(t)) for t in tags]
         fn = getattr(self.client, READ_FN[table])
-        result = await fn(start, count=end - start + 1, **{_UNIT_KW: self.unit})
-        if result.isError():
-            names = ", ".join(t.name for t in tags)
-            raise IOError(f"{table} registers {start}–{end} ({names}): PLC returned {result}")
-        for tag in tags:
-            offset = tag.modbus["address"] - start
-            if table in ("coil", "discrete"):
-                self._last[tag.name] = bool(result.bits[offset])
-            else:
-                raw = _to_signed(result.registers[offset])
-                if tag.type == "bool":
-                    self._last[tag.name] = raw != 0
-                else:
-                    self._last[tag.name] = raw / float(tag.modbus.get("scale", 1))
+        for start, count in batches(spans, limit):
+            result = await fn(start, count=count, **{_UNIT_KW: self.unit})
+            inside = [t for t in tags if start <= t.modbus["address"] < start + count]
+            if result.isError():
+                names = ", ".join(t.name for t in inside)
+                raise IOError(f"{table} {start}–{start + count - 1} ({names}): PLC returned {result}")
+            for tag in inside:
+                self._last[tag.name] = self._decode(tag, result, tag.modbus["address"] - start)
+
+    @staticmethod
+    def _decode(tag: Tag, result, offset: int) -> Value:
+        m = tag.modbus
+        if m["table"] in ("coil", "discrete"):
+            return bool(result.bits[offset])
+        if tag.type == "bool":
+            word = result.registers[offset]
+            return bool(word >> m["bit"] & 1) if "bit" in m else word != 0
+        width = register_count(m.get("type", "int16"))
+        raw = decode(result.registers[offset:offset + width], m.get("type", "int16"), m.get("word_order", "big"))
+        return raw / float(m.get("scale", 1))
 
     async def write(self, name: str, value: Value) -> None:
         tag = self.db.get(name)
         if not tag.modbus:
             raise TagError(f"{name} has no Modbus address")
-        table, address = tag.modbus["table"], tag.modbus["address"]
+        m = tag.modbus
+        table, address = m["table"], m["address"]
+        unit = {_UNIT_KW: self.unit}
         if table == "coil":
-            result = await self.client.write_coil(address, bool(value), **{_UNIT_KW: self.unit})
+            result = await self.client.write_coil(address, bool(value), **unit)
+        elif table == "holding" and tag.type == "bool" and "bit" in m:
+            # One bit of a status/command word: read, change that bit, write back.
+            current = await self.client.read_holding_registers(address, count=1, **unit)
+            if current.isError():
+                raise IOError(f"write {name} failed reading the register first: {current}")
+            word = current.registers[0]
+            word = word | (1 << m["bit"]) if value else word & ~(1 << m["bit"])
+            result = await self.client.write_register(address, word & 0xFFFF, **unit)
         elif table == "holding":
-            raw = int(round(float(value) * float(tag.modbus.get("scale", 1))))
-            if not -0x8000 <= raw <= 0x7FFF:
-                raise TagError(f"{name}: scaled value {raw} does not fit a 16-bit register")
-            result = await self.client.write_register(address, raw & 0xFFFF, **{_UNIT_KW: self.unit})
+            dtype = m.get("type", "int16")
+            raw = (1 if value else 0) if tag.type == "bool" else float(value) * float(m.get("scale", 1))
+            try:
+                words = encode(raw, dtype, m.get("word_order", "big"))
+            except ValueError as exc:
+                raise TagError(f"{name}: {exc}") from None
+            if len(words) == 1:
+                result = await self.client.write_register(address, words[0], **unit)
+            else:
+                result = await self.client.write_registers(address, words, **unit)
         else:
             raise TagError(f"{name}: {table} registers are read-only")
         if result.isError():

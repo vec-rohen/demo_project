@@ -83,7 +83,8 @@ class SiteManager:
             self.events.add("system", f"{asset['name']} could not start: {exc}", asset=asset["id"])
             return
         poll = self.poll_interval or max(0.1, asset["plc"].get("poll_ms", 500) / 1000)
-        runtime = Runtime(db, driver, poll_interval=poll, asset_id=asset["id"], events=self.events, store=self.store)
+        runtime = Runtime(db, driver, poll_interval=poll, asset_id=asset["id"], events=self.events, store=self.store,
+                          mode_tag=asset.get("mode_tag"))
         await runtime.start()
         self.runtimes[asset["id"]] = runtime
 

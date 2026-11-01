@@ -541,3 +541,244 @@ def test_fresh_device_waits_for_configuration(tmp_path, monkeypatch):
         login(c, "admin", "my-own-pass-1")
         assert c.get("/api/site").json()["configured"] is True
         assert c.get(f"{A}/state").json()["connected"] is True
+
+
+def test_modbus_data_types_and_batching():
+    """32-bit types, word order, bits in registers, gaps beyond one request, writes."""
+    from pymodbus import datastore
+    from pymodbus.datastore import ModbusSequentialDataBlock, ModbusServerContext
+    from pymodbus.server import ModbusTcpServer
+
+    from src.hmi.drivers.codec import encode
+    from src.hmi.drivers.modbus import ModbusDriver
+
+    Ctx = getattr(datastore, "ModbusDeviceContext", None) or datastore.ModbusSlaveContext
+    devices_kw = "devices" if hasattr(datastore, "ModbusDeviceContext") else "slaves"
+    tags = [
+        {"name": "Flow", "kind": "AI", "type": "float", "min": 0, "max": 500,
+         "modbus": {"table": "input", "address": 0, "type": "float32"}},
+        {"name": "Total", "kind": "AI", "type": "float", "min": -1e9, "max": 1e9, "decimals": 0,
+         "modbus": {"table": "input", "address": 2, "type": "int32", "word_order": "little"}},
+        {"name": "Hours", "kind": "AI", "type": "float", "min": 0, "max": 70000, "decimals": 0,
+         "modbus": {"table": "input", "address": 3000, "type": "uint16"}},       # far away: separate request
+        {"name": "Running", "kind": "DI", "type": "bool", "modbus": {"table": "input", "address": 10, "bit": 3}},
+        {"name": "Fault", "kind": "DI", "type": "bool", "modbus": {"table": "input", "address": 10, "bit": 4}},
+        {"name": "Speed", "kind": "AO", "type": "float", "min": 0, "max": 100, "writable": True,
+         "modbus": {"table": "holding", "address": 0, "type": "float32", "word_order": "little"}},
+        {"name": "Reset", "kind": "DO", "type": "bool", "writable": True,
+         "modbus": {"table": "holding", "address": 5, "bit": 2}},
+    ]
+    db = TagDatabase.from_dicts({}, tags)
+    ir = [0] * 3100
+    ir[0:2] = encode(123.25, "float32")
+    ir[2:4] = encode(-70000, "int32", "little")
+    ir[3000] = 65000
+    ir[10] = 0b01000  # bit 3 set, bit 4 clear
+    hr = [0] * 20
+    hr[5] = 0b1000_0001  # other bits in the command word must survive a bit write
+
+    async def scenario():
+        device = Ctx(di=ModbusSequentialDataBlock(1, [0] * 10), co=ModbusSequentialDataBlock(1, [0] * 10),
+                     ir=ModbusSequentialDataBlock(1, ir), hr=ModbusSequentialDataBlock(1, hr))
+        server = ModbusTcpServer(ModbusServerContext(**{devices_kw: device}, single=True), address=("127.0.0.1", 15021))
+        task = asyncio.create_task(server.serve_forever())
+        await asyncio.sleep(0.3)
+        driver = ModbusDriver(db, host="127.0.0.1", port=15021)
+        try:
+            await driver.start()
+            values = await driver.read_all()
+            errors = list(driver.errors)
+            await driver.write("Speed", 42.5)
+            await driver.write("Reset", True)
+            check = ModbusDriver(TagDatabase.from_dicts({}, [
+                {"name": "SpeedRaw", "kind": "AI", "type": "float", "modbus": {"table": "holding", "address": 0, "type": "float32", "word_order": "little"}},
+                {"name": "Word5", "kind": "AI", "type": "float", "modbus": {"table": "holding", "address": 5, "type": "uint16"}},
+            ]), host="127.0.0.1", port=15021)
+            await check.start()
+            after = await check.read_all()
+            await check.stop()
+        finally:
+            await driver.stop()
+            await server.shutdown()
+            task.cancel()
+        return values, errors, after
+
+    values, errors, after = asyncio.run(scenario())
+    assert errors == []
+    assert values["Flow"] == 123.25 and values["Total"] == -70000 and values["Hours"] == 65000
+    assert values["Running"] is True and values["Fault"] is False
+    assert after["SpeedRaw"] == 42.5
+    assert after["Word5"] == 0b1000_0101  # bit 2 set, bits 0 and 7 untouched
+
+
+def test_modbus_tag_validation():
+    base = {"name": "X", "kind": "AI", "type": "float"}
+    with pytest.raises(TagError, match="data type"):
+        TagDatabase.from_dicts({}, [{**base, "modbus": {"table": "input", "address": 0, "type": "real"}}])
+    with pytest.raises(TagError, match="bit number"):
+        TagDatabase.from_dicts({}, [{**base, "modbus": {"table": "input", "address": 0, "bit": 1}}])
+    with pytest.raises(TagError, match="digital"):
+        TagDatabase.from_dicts({}, [{**base, "modbus": {"table": "coil", "address": 0}}])
+
+
+def test_mode_tag_is_per_asset(anon):
+    """Manual-only outputs lock on the asset's own mode tag, whatever it is called."""
+    login(anon, "integ")
+    pkg = demo_package()
+    pkg["assets"].append({
+        "id": "PS-03", "name": "Pump 3", "plc": {"protocol": "sim"}, "mode_tag": "InAuto",
+        "tags": [{"name": "InAuto", "kind": "SP", "type": "bool", "writable": True},
+                 {"name": "Run", "kind": "DO", "type": "bool", "writable": True, "manual_only": True}]})
+    assert anon.post("/api/package", json=pkg).status_code == 200
+    login(anon, "integ")
+    url = "/api/assets/PS-03"
+    assert anon.get(f"{url}/config").json()["asset"]["mode_tag"] == "InAuto"
+    assert anon.post(f"{url}/tags/Run", json={"value": True}).status_code == 200    # Manual: allowed
+    anon.post(f"{url}/tags/InAuto", json={"value": True})
+    assert anon.post(f"{url}/tags/Run", json={"value": False}).status_code == 409   # Auto: locked
+    # The mode tag can't be deleted while it's in use, and manual-only needs a mode tag.
+    assert anon.delete(f"{url}/tags/InAuto").status_code == 422
+    bad = demo_package()
+    del bad["assets"][0]["mode_tag"]
+    with pytest.raises(PackageError, match="mode tag"):
+        apply_package(Store(), bad, "t")
+
+
+def test_old_device_database_is_upgraded(tmp_path):
+    import sqlite3
+    old = sqlite3.connect(tmp_path / "old.db")
+    old.execute("CREATE TABLE assets (id TEXT PRIMARY KEY, name TEXT NOT NULL, description TEXT NOT NULL DEFAULT '', "
+                "plc TEXT NOT NULL, screen TEXT NOT NULL DEFAULT 'auto', position INTEGER NOT NULL DEFAULT 0)")
+    old.execute("""INSERT INTO assets (id, name, plc) VALUES ('A1', 'Old asset', '{"protocol": "sim", "poll_ms": 500}')""")
+    old.commit()
+    old.close()
+    store = Store(tmp_path / "old.db")
+    assert store.asset("A1")["mode_tag"] is None
+
+
+def test_comms_loss_freezes_values_and_raises_alarm(db, monkeypatch):
+    from src.hmi import runtime as rt_mod
+    from src.hmi.runtime import Runtime
+    from src.hmi.drivers.base import Driver
+
+    class FlakyDriver(Driver):
+        def __init__(self, db):
+            super().__init__(db)
+            self.level = 50.0
+
+        async def read_all(self):
+            return {"AI_TankLevel": self.level, "SP_LevelHiAlarm": 85.0}
+
+        async def write(self, name, value):
+            pass
+
+    monkeypatch.setattr(rt_mod, "COMMS_ALARM_DELAY_S", 0)
+    drv = FlakyDriver(db)
+    runtime = Runtime(db, drv, asset_id="A1")
+
+    async def scenario():
+        drv.connected = True
+        await runtime.poll_once()
+        good = runtime.last_good
+        drv.connected, drv.level = False, 99.0   # PLC drops out; last value would trip the HI alarm
+        await runtime.poll_once()
+        snap = runtime.snapshot()
+        assert snap["connected"] is False and snap["last_good"] == good
+        ids = {a["id"]: a for a in snap["alarms"]}
+        assert ids["comms"]["active"] and "communication lost" in ids["comms"]["message"]
+        assert "AI_TankLevel.hi" not in ids        # no alarms judged on frozen values
+        drv.connected, drv.level = True, 50.0
+        await runtime.poll_once()
+        assert not {a["id"]: a for a in runtime.snapshot()["alarms"]}["comms"]["active"]
+
+    asyncio.run(scenario())
+
+
+def test_s7_driver_against_snap7_server():
+    """Read inputs, outputs, merkers and DB values of every type; write REAL, INT and bits."""
+    snap7 = pytest.importorskip("snap7")
+    import struct
+    import ctypes
+
+    from snap7.type import SrvArea
+
+    from src.hmi.drivers.s7 import S7Driver
+
+    def area(n):
+        return (ctypes.c_ubyte * n)()
+
+    pe, pa, mk, db1 = area(16), area(16), area(32), area(64)
+    pe[0] = 0b0000_0101                         # %I0.0 on, %I0.1 off, %I0.2 on
+    pe[4:6] = list(struct.pack(">h", 13824))    # %IW4 raw analog (0–27648 range)
+    mk[10:14] = list(struct.pack(">i", -123456))  # %MD10 DINT
+    db1[4:8] = list(struct.pack(">f", 61.5))    # %DB1.DBD4 REAL
+    db1[8:10] = list(struct.pack(">H", 50000))  # %DB1.DBW8 UINT
+    db1[12] = 0b1000_0001                       # bits 0 and 7 – bit writes must not disturb them
+
+    server = snap7.server.Server(log=False) if "log" in snap7.server.Server.__init__.__code__.co_varnames else snap7.server.Server()
+    for kind, index, data in ((SrvArea.PE, 0, pe), (SrvArea.PA, 0, pa), (SrvArea.MK, 0, mk), (SrvArea.DB, 1, db1)):
+        server.register_area(kind, index, data)
+    server.start(tcp_port=11102)
+    tags = [
+        {"name": "Run", "kind": "DI", "type": "bool", "s7": {"address": "%I0.0"}},
+        {"name": "Trip", "kind": "DI", "type": "bool", "s7": {"address": "I0.1"}},
+        {"name": "Level", "kind": "AI", "type": "float", "min": 0, "max": 100,
+         "s7": {"address": "%IW4", "type": "int", "scale": 276.48}},
+        {"name": "Count", "kind": "AI", "type": "float", "min": -1e9, "max": 1e9, "s7": {"address": "%MD10", "type": "dint"}},
+        {"name": "Temp", "kind": "AI", "type": "float", "min": 0, "max": 200, "s7": {"address": "%DB1.DBD4"}},
+        {"name": "Hours", "kind": "AI", "type": "float", "min": 0, "max": 65535, "s7": {"address": "%DB1.DBW8", "type": "uint"}},
+        {"name": "Setpoint", "kind": "SP", "type": "float", "min": 0, "max": 100, "writable": True,
+         "s7": {"address": "%DB1.DBD20", "type": "real"}},
+        {"name": "Speed", "kind": "AO", "type": "float", "min": 0, "max": 100, "writable": True,
+         "s7": {"address": "%QW2", "type": "int", "scale": 276.48}},
+        {"name": "Start", "kind": "DO", "type": "bool", "writable": True, "s7": {"address": "%DB1.DBX12.3"}},
+        # Read-backs of the raw memory the writes touched
+        {"name": "SpeedRaw", "kind": "AI", "type": "float", "s7": {"address": "%QW2", "type": "int"}},
+        {"name": "Byte12", "kind": "AI", "type": "float", "s7": {"address": "%DB1.DBB12", "type": "byte"}},
+    ]
+    db = TagDatabase.from_dicts({}, tags)
+
+    async def scenario():
+        driver = S7Driver(db, host="127.0.0.1", rack=0, slot=1, port=11102)
+        try:
+            await driver.start()
+            values = await driver.read_all()
+            errors = list(driver.errors)
+            await driver.write("Setpoint", 42.25)
+            await driver.write("Speed", 50)
+            await driver.write("Start", True)
+            with pytest.raises(TagError):
+                await driver.write("Run", True)   # inputs are read-only
+            after = await driver.read_all()
+        finally:
+            await driver.stop()
+        return values, errors, after
+
+    try:
+        values, errors, after = asyncio.run(scenario())
+    finally:
+        server.stop()
+        server.destroy()
+    assert errors == []
+    assert values["Run"] is True and values["Trip"] is False
+    assert values["Level"] == pytest.approx(50.0) and values["Count"] == -123456
+    assert values["Temp"] == 61.5 and values["Hours"] == 50000
+    assert after["Setpoint"] == 42.25
+    assert after["SpeedRaw"] == 13824                                 # 50 % × 276.48
+    assert after["Byte12"] == 0b1000_1001                             # bit 3 set, bits 0 and 7 kept
+
+
+def test_s7_settings_validation():
+    base = {"name": "X", "kind": "AI", "type": "float"}
+    with pytest.raises(TagError, match="S7 address"):
+        TagDatabase.from_dicts({}, [{**base, "s7": {"address": "%Z1"}}])
+    with pytest.raises(TagError, match="holds real"):
+        TagDatabase.from_dicts({}, [{**base, "s7": {"address": "%MD4", "type": "int"}}])
+    with pytest.raises(TagError, match="read-only"):
+        TagDatabase.from_dicts({}, [{**base, "writable": True, "s7": {"address": "%IW64"}}])
+    pkg = demo_package()
+    pkg["assets"][0]["plc"] = {"protocol": "s7", "host": "10.0.0.5", "rack": 0, "slot": 9}
+    apply_package(Store(), pkg, "t")
+    pkg["assets"][0]["plc"]["slot"] = 99
+    with pytest.raises(PackageError, match="slot"):
+        apply_package(Store(), pkg, "t")

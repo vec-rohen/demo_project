@@ -28,6 +28,8 @@ class WriteRejected(Exception):
 HISTORY_HEARTBEAT_S = 60.0   # store a point at least this often, even if unchanged
 HISTORY_DEADBAND = 0.005     # ...or when it moves more than 0.5 % of its span
 HISTORY_FLUSH_S = 5.0
+COMMS_ALARM = "comms"          # alarm id for "PLC communication lost"
+COMMS_ALARM_DELAY_S = 10.0     # ride through short blips (e.g. a PLC restart) before alarming
 
 
 class Runtime:
@@ -41,11 +43,13 @@ class Runtime:
         asset_id: str = "default",
         events: EventLog | None = None,
         store=None,
+        mode_tag: str | None = None,
     ):
         self.db = db
         self.driver = driver
         self.asset_id = asset_id
         self.store = store
+        self.mode_tag = mode_tag  # digital tag that is ON while the PLC runs the asset in Auto
         self.poll_interval = poll_interval
         self.history_interval = history_interval
         self.events = events if events is not None else EventLog()
@@ -56,6 +60,8 @@ class Runtime:
             t.name: deque(maxlen=history_points) for t in db.analog()
         }
         self._last_history = 0.0
+        self.started_at = time.time()
+        self.last_good: float | None = None   # last poll with fresh values from the PLC
         self._stored: dict[str, tuple[float, float]] = {}   # tag -> (t, v) last written to the store
         self._pending_rows: list[tuple[str, str, float, float]] = []
         self._last_flush = time.time()
@@ -104,11 +110,18 @@ class Runtime:
         self.values = await self.driver.read_all()
         now = time.time()
         self.updated_at = now
-        if was_connected != self.driver.connected:
-            self._event("system", "PLC connection restored" if self.driver.connected
-                        else "PLC connection lost")
-        self.alarms.evaluate(self.values, now)
-        if now - self._last_history >= self.history_interval:
+        connected = self.driver.connected
+        if was_connected != connected:
+            self._event("system", "PLC connection restored" if connected else "PLC connection lost")
+        if connected:
+            self.last_good = now
+            # Only judge alarms and record trends on fresh values; while the PLC is
+            # unreachable the last values are frozen and would mislead.
+            self.alarms.evaluate(self.values, now)
+        offline_for = now - (self.last_good or self.started_at)
+        self.alarms.set_system(COMMS_ALARM, not connected and offline_for >= COMMS_ALARM_DELAY_S,
+                               f"{self.db.plant.get('name', self.asset_id)}: PLC communication lost", now=now)
+        if connected and now - self._last_history >= self.history_interval:
             self._last_history = now
             for name, buf in self.history.items():
                 if name in self.values:
@@ -155,6 +168,7 @@ class Runtime:
             "asset": self.asset_id,
             "t": self.updated_at,
             "connected": self.driver.connected,
+            "last_good": self.last_good,
             "values": self.values,
             "alarms": self.alarms.visible(),
             "events": events,
@@ -182,7 +196,7 @@ class Runtime:
         tag = self.db.get(name)
         if not tag.writable:
             raise WriteRejected(f"{name} is read-only")
-        if tag.manual_only and self.values.get("SP_AutoMode"):
+        if tag.manual_only and self.mode_tag and self.values.get(self.mode_tag):
             raise WriteRejected(f"{name} is controlled by the PLC in automatic mode; switch to manual first")
         value = tag.coerce(raw_value)
         old = self.values.get(name)

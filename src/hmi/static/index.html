@@ -61,6 +61,7 @@
   </nav>
 
   <div class="readonly-strip" id="readonly-strip" hidden></div>
+  <div class="stale-strip" id="stale-strip" role="status" hidden></div>
 
   <main>
     <!-- OVERVIEW -->
@@ -258,20 +259,29 @@
               <label for="plc-protocol">Protocol</label>
               <select id="plc-protocol">
                 <option value="modbus">Modbus TCP</option>
+                <option value="s7">Siemens S7 (S7-1200/1500/300)</option>
                 <option value="sim">Simulator (no PLC)</option>
               </select>
             </div>
-            <div class="field modbus-only">
+            <div class="field net-only">
               <label for="plc-host">PLC IP address</label>
               <input id="plc-host" class="mono" inputmode="decimal" autocomplete="off" spellcheck="false" placeholder="192.168.1.10">
             </div>
-            <div class="field modbus-only small-field">
+            <div class="field net-only small-field">
               <label for="plc-port">Port</label>
               <input id="plc-port" type="number" inputmode="numeric" min="1" max="65535">
             </div>
             <div class="field modbus-only small-field">
               <label for="plc-unit">Unit ID</label>
               <input id="plc-unit" type="number" inputmode="numeric" min="0" max="255">
+            </div>
+            <div class="field s7-only small-field">
+              <label for="plc-rack">Rack</label>
+              <input id="plc-rack" type="number" inputmode="numeric" min="0" max="7">
+            </div>
+            <div class="field s7-only small-field">
+              <label for="plc-slot">Slot</label>
+              <input id="plc-slot" type="number" inputmode="numeric" min="0" max="31">
             </div>
             <div class="field small-field">
               <label for="plc-poll">Poll (ms)</label>

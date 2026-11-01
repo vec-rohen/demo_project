@@ -102,7 +102,7 @@ async function openChanges() {
   let changes;
   try { changes = await api("GET", "/api/changes"); } catch (err) { toast(err.message, "error"); return; }
   const describe = (c) => {
-    if (c.kind === "plc") return `PLC → ${c.after.protocol === "modbus" ? `${c.after.host}:${c.after.port} unit ${c.after.unit}` : c.after.protocol}, poll ${c.after.poll_ms} ms`;
+    if (c.kind === "plc") return `PLC → ${c.after.protocol === "sim" ? "simulator" : `${c.after.protocol} ${c.after.host}:${c.after.port}`}, poll ${c.after.poll_ms} ms`;
     if (c.kind === "tag" && !c.after) return "Deleted";
     if (c.kind === "tag" && !c.before) return "Added";
     if (c.kind === "tag") {
@@ -129,8 +129,10 @@ async function openChanges() {
 function fillPlcForm(plc) {
   $("#plc-protocol").value = plc.protocol;
   $("#plc-host").value = plc.host ?? "";
-  $("#plc-port").value = plc.port ?? 502;
+  $("#plc-port").value = plc.port ?? (plc.protocol === "s7" ? 102 : 502);
   $("#plc-unit").value = plc.unit ?? 1;
+  $("#plc-rack").value = plc.rack ?? 0;
+  $("#plc-slot").value = plc.slot ?? 1;
   $("#plc-poll").value = plc.poll_ms ?? 500;
   const editable = hasRole("integrator");
   for (const input of $$("#plc-form input, #plc-form select")) input.disabled = !editable;
@@ -138,17 +140,24 @@ function fillPlcForm(plc) {
 }
 
 function syncPlcFields() {
-  const modbus = $("#plc-protocol").value === "modbus";
-  for (const f of $$("#plc-form .modbus-only")) f.hidden = !modbus;
+  const protocol = $("#plc-protocol").value;
+  for (const f of $$("#plc-form .modbus-only")) f.hidden = protocol !== "modbus";
+  for (const f of $$("#plc-form .s7-only")) f.hidden = protocol !== "s7";
+  for (const f of $$("#plc-form .net-only")) f.hidden = protocol === "sim";
+  // Suggest the protocol's standard port when switching.
+  const port = $("#plc-port");
+  if (protocol === "s7" && port.value === "502") port.value = 102;
+  if (protocol === "modbus" && port.value === "102") port.value = 502;
 }
 
 function readPlcForm() {
   const plc = { protocol: $("#plc-protocol").value, poll_ms: Number($("#plc-poll").value) };
-  if (plc.protocol === "modbus") {
+  if (plc.protocol !== "sim") {
     plc.host = $("#plc-host").value.trim();
     plc.port = Number($("#plc-port").value);
-    plc.unit = Number($("#plc-unit").value);
   }
+  if (plc.protocol === "modbus") plc.unit = Number($("#plc-unit").value);
+  if (plc.protocol === "s7") Object.assign(plc, { rack: Number($("#plc-rack").value), slot: Number($("#plc-slot").value) });
   return plc;
 }
 
@@ -178,7 +187,8 @@ async function testPlc() {
 
 async function savePlc() {
   const plc = readPlcForm();
-  const target = plc.protocol === "modbus" ? `${plc.host}:${plc.port} (unit ${plc.unit})` : "the simulator";
+  const target = plc.protocol === "modbus" ? `${plc.host}:${plc.port} (unit ${plc.unit})`
+    : plc.protocol === "s7" ? `S7 PLC ${plc.host} (rack ${plc.rack}, slot ${plc.slot})` : "the simulator";
   const ok = await confirmChange("Apply new PLC connection?",
     `Connect to <b>${esc(target)}</b>, polling every ${esc(plc.poll_ms)} ms.<br>` +
     "<span class=\"muted\">The asset restarts its connection straight away. The change is logged for cloud sync.</span>");
@@ -192,12 +202,7 @@ async function savePlc() {
 }
 
 /* --- I/O checkout */
-function formatAddress(tag) {
-  const m = tag.modbus;
-  if (!m) return "—";
-  const prefix = { coil: "0x", discrete: "1x", input: "3x", holding: "4x" }[m.table] || m.table;
-  return `${prefix} ${m.address}${m.scale && m.scale !== 1 ? ` ÷${m.scale}` : ""}`;
-}
+const formatAddress = (tag) => TagForm.address(tag, C.plc?.protocol);
 
 function checkCounts() {
   const counts = { pass: 0, fail: 0, na: 0, open: 0 };
@@ -313,6 +318,7 @@ function exportReport() {
 /* --- edit / add an I/O point (integrators) */
 function openTagDialog(tag) {
   TagForm.open(tag, {
+    protocol: C.plc?.protocol === "s7" ? "s7" : "modbus",
     exists: (name) => C.tags.some((t) => t.name === name),
     save: async (def, isNew) => {
       await api("PUT", `${A()}/tags/${encodeURIComponent(def.name)}/definition`, def);

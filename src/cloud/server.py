@@ -28,6 +28,7 @@ from .service import CloudError, CloudService
 HERE = Path(__file__).parent
 EDGE_STATIC = HERE.parent / "hmi" / "static"
 COOKIE = "portal_session"
+XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
 
 class PortalAccounts:
@@ -112,7 +113,8 @@ def create_app(db: CloudDB | None = None, idle_timeout: float | None = None,
     async def json_only_writes(request: Request, call_next):
         if request.method == "POST" and request.url.path.startswith("/api/"):
             ctype = request.headers.get("content-type", "").split(";")[0].strip()
-            if ctype not in ("application/json", "text/csv"):
+            # None of these can be sent cross-site without a CORS preflight.
+            if ctype not in ("application/json", "text/csv", XLSX):
                 return JSONResponse({"detail": "Content-Type must be application/json"}, status_code=415)
         return await call_next(request)
 
@@ -299,6 +301,10 @@ def create_app(db: CloudDB | None = None, idle_timeout: float | None = None,
         except UnicodeDecodeError:
             text = raw.decode("cp1252")  # Excel on Windows
         return service.import_csv(asset_id, text, mode, user.username)
+
+    @app.post("/api/assets/{asset_id}/import-tia")
+    async def import_tia(asset_id: str, request: Request, mode: str = "merge", user: User = Depends(tech)):
+        return service.import_tia(asset_id, await request.body(), mode, user.username)
 
     @app.get("/api/assets/{asset_id}/io.csv")
     def export_csv(asset_id: str, _: User = Depends(signed_in)):

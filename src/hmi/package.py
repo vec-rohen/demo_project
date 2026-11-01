@@ -41,7 +41,7 @@ from .tags import ROLES, TagDatabase, TagError
 
 FORMAT = "plant-hmi/edge-package"
 SCHEMA = 1
-PROTOCOLS = ("sim", "modbus")
+PROTOCOLS = ("sim", "modbus", "s7")
 SCREENS = ("auto", "tank-demo")
 ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
 DEMO_TAGS = Path(__file__).parent / "tags.json"
@@ -78,7 +78,28 @@ def validate_plc(plc: dict[str, Any], where: str = "PLC") -> dict[str, Any]:
         if not isinstance(unit, int) or not 0 <= unit <= 255:
             raise PackageError(f"{where}: unit id must be 0–255")
         clean.update(host=host.strip(), port=port, unit=unit)
+    elif protocol == "s7":
+        host, rack, slot, port = plc.get("host"), plc.get("rack", 0), plc.get("slot", 1), plc.get("port", 102)
+        if not isinstance(host, str) or not host.strip() or len(host) > 253:
+            raise PackageError(f"{where}: PLC IP address or host name required")
+        if not isinstance(rack, int) or not 0 <= rack <= 7 or not isinstance(slot, int) or not 0 <= slot <= 31:
+            raise PackageError(f"{where}: rack must be 0–7 and slot 0–31 (S7-1200/1500: 0/1, S7-300: 0/2)")
+        if not isinstance(port, int) or not 1 <= port <= 65535:
+            raise PackageError(f"{where}: port must be 1–65535")
+        clean.update(host=host.strip(), rack=rack, slot=slot, port=port)
     return clean
+
+
+def validate_asset_io(tags: list[dict[str, Any]], mode_tag: str | None = None) -> TagDatabase:
+    """Check an asset's I/O list together with its Auto/Manual mode tag. Raises TagError."""
+    db = TagDatabase.from_dicts({}, tags)
+    if mode_tag:
+        tag = db.tags.get(mode_tag)
+        if tag is None or tag.type != "bool":
+            raise TagError(f"Auto/Manual mode tag {mode_tag!r} must be a digital point of this asset")
+    elif any(t.manual_only for t in db.tags.values()):
+        raise TagError("Points marked manual-only need the asset's Auto/Manual mode tag")
+    return db
 
 
 def validate_package(pkg: dict[str, Any]) -> None:
@@ -101,7 +122,7 @@ def validate_package(pkg: dict[str, Any]) -> None:
             raise PackageError(f"Asset {asset['id']}: screen must be one of {', '.join(SCREENS)}")
         asset["plc"] = validate_plc(asset.get("plc"), f"Asset {asset['id']}")
         try:
-            TagDatabase.from_dicts({}, asset.get("tags", []))
+            validate_asset_io(asset.get("tags", []), asset.get("mode_tag"))
         except TagError as exc:
             raise PackageError(f"Asset {asset['id']}: {exc}") from None
     users = pkg.get("users")
@@ -170,6 +191,7 @@ def demo_package() -> dict[str, Any]:
         "assets": [{
             "id": "SKID-01", "name": raw["plant"]["name"], "description": raw["plant"]["description"],
             "screen": "tank-demo", "plc": {"protocol": "sim", "poll_ms": 250}, "tags": raw["tags"],
+            "mode_tag": "SP_AutoMode",
         }],
     }
 

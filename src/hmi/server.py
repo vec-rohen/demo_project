@@ -24,11 +24,11 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from .auth import ROLES, AuthError, SessionManager, User, UserStore, role_at_least
-from .package import PackageError, apply_package, demo_package, export_package, validate_plc
+from .package import PackageError, apply_package, demo_package, export_package, validate_asset_io, validate_plc
 from .runtime import Runtime, WriteRejected
 from .site import SiteManager
 from .store import Store
-from .tags import TagDatabase, TagError
+from .tags import TagError
 
 HERE = Path(__file__).parent
 STATIC = HERE / "static"
@@ -333,7 +333,7 @@ def create_app(store: Store | None = None, *, site: SiteManager | None = None,
         runtime = runtime_for(asset_id)
         asset = asset_or_404(asset_id)
         return {
-            "asset": {k: asset[k] for k in ("id", "name", "description", "screen")},
+            "asset": {k: asset.get(k) for k in ("id", "name", "description", "screen", "mode_tag")},
             "plant": runtime.db.plant,
             "driver": type(runtime.driver).__name__,
             "simulated_inputs": bool(getattr(runtime.driver, "supports_simulated_inputs", False)),
@@ -410,7 +410,7 @@ def create_app(store: Store | None = None, *, site: SiteManager | None = None,
         store.save_asset({**asset, "plc": plc})
         store.log_change(user.username, asset_id, "plc", asset_id, before, plc)
         await site.reload_asset(asset_id)
-        target = f"{plc.get('host')}:{plc.get('port')}" if plc["protocol"] == "modbus" else plc["protocol"]
+        target = "the simulator" if plc["protocol"] == "sim" else f"{plc['protocol']} {plc['host']}:{plc['port']}"
         site.events.add("config", f"{asset['name']}: PLC connection set to {target}",
                         asset=asset_id, user=user.username)
         return plc
@@ -457,7 +457,7 @@ def create_app(store: Store | None = None, *, site: SiteManager | None = None,
         before = current.get(name)
         current[name] = body
         try:
-            TagDatabase.from_dicts({}, list(current.values()))  # validate the whole asset
+            validate_asset_io(list(current.values()), asset.get("mode_tag"))  # the whole asset
         except TagError as exc:
             raise HTTPException(422, str(exc)) from None
         store.save_tag(asset_id, body)
@@ -476,7 +476,7 @@ def create_app(store: Store | None = None, *, site: SiteManager | None = None,
             raise HTTPException(404, f"Unknown tag {name!r}")
         before = current.pop(name)
         try:
-            TagDatabase.from_dicts({}, list(current.values()))
+            validate_asset_io(list(current.values()), asset.get("mode_tag"))
         except TagError as exc:
             raise HTTPException(422, f"Can't delete {name}: {exc}") from None
         store.delete_tag(asset_id, name)

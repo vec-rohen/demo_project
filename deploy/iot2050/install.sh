@@ -118,7 +118,7 @@ else
   "$APP_DIR/venv/bin/pip" install --quiet --upgrade pip
   "$APP_DIR/venv/bin/pip" install -r "$APP_DIR/requirements.txt"  # progress shown: slow over a modem
 fi
-"$APP_DIR/venv/bin/python" -c 'import fastapi, uvicorn, pymodbus, websockets' \
+"$APP_DIR/venv/bin/python" -c 'import fastapi, uvicorn, pymodbus, websockets, snap7' \
   || fail "Python packages didn't install correctly"
 (cd "$APP_DIR" && "$APP_DIR/venv/bin/python" -c 'import src.hmi.server') \
   || fail "the app doesn't import on this Python; see the error above"

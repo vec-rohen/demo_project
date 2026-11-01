@@ -16,9 +16,10 @@ import time
 from typing import Any
 
 from src.hmi.auth import MIN_PASSWORD, USERNAME_RE, hash_password
-from src.hmi.package import FORMAT, SCHEMA, SCREENS, PackageError, validate_package, validate_plc
+from src.hmi.package import (FORMAT, SCHEMA, SCREENS, PackageError, validate_asset_io, validate_package,
+                             validate_plc)
 from src.hmi.tags import ROLES as HMI_ROLES
-from src.hmi.tags import TagDatabase, TagError
+from src.hmi.tags import TagError
 
 from .db import CloudDB
 
@@ -27,7 +28,8 @@ EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 CSV_COLUMNS = [
     "name", "description", "kind", "type", "unit", "min", "max", "decimals", "writable", "role",
-    "modbus_table", "modbus_address", "modbus_scale",
+    "modbus_table", "modbus_address", "modbus_scale", "modbus_type", "modbus_word_order", "modbus_bit",
+    "s7_address", "s7_type", "s7_scale",
     "alarm_state", "alarm_priority", "alarm_message",
     "alarm_hihi", "alarm_hi", "alarm_lo", "alarm_lolo", "alarm_deadband", "manual_only",
 ]
@@ -313,6 +315,11 @@ class CloudService:
         if data.get("plc") is not None:
             self.db.run("UPDATE assets SET plc = ? WHERE id = ?", (json.dumps(self._plc(data["plc"])), asset_id))
             changes.append("PLC connection")
+        if "mode_tag" in data:
+            mode_tag = data["mode_tag"] or None
+            self._validate_tags(self.tags(asset_id), mode_tag)
+            self.db.run("UPDATE assets SET mode_tag = ? WHERE id = ?", (mode_tag, asset_id))
+            changes.append(f"mode tag → {mode_tag or 'none'}")
         if "device_id" in data:
             device_id = data["device_id"] or None
             self._check_device_for_asset(device_id, asset["site_id"])
@@ -336,6 +343,7 @@ class CloudService:
                                           "description": source["description"], "screen": source["screen"],
                                           "plc": source["plc"]}, user)
         self._replace_tags(new["id"], self.tags(asset_id))
+        self.db.run("UPDATE assets SET mode_tag = ? WHERE id = ?", (source.get("mode_tag"), new["id"]))
         self.audit(user, "asset.duplicate", new["id"], f"copied from {asset_id}")
         return self.asset(new["id"])
 
@@ -345,9 +353,9 @@ class CloudService:
                 self.db.q("SELECT def FROM tags WHERE asset_id = ? ORDER BY position, name", (asset_id,))]
 
     @staticmethod
-    def _validate_tags(tags: list[dict[str, Any]]) -> None:
+    def _validate_tags(tags: list[dict[str, Any]], mode_tag: str | None = None) -> None:
         try:
-            TagDatabase.from_dicts({}, tags)
+            validate_asset_io(tags, mode_tag)
         except TagError as exc:
             raise CloudError(422, str(exc)) from None
 
@@ -368,7 +376,7 @@ class CloudService:
             tags.append(definition)
         else:
             tags[existing] = definition
-        self._validate_tags(tags)
+        self._validate_tags(tags, self.asset(asset_id).get("mode_tag"))
         self._replace_tags(asset_id, tags)
         self.audit(user, "tag.update" if existing is not None else "tag.create", f"{asset_id}/{name}")
         return definition
@@ -379,7 +387,7 @@ class CloudService:
         if len(remaining) == len(tags):
             raise CloudError(404, f"Unknown tag {name!r}")
         try:
-            TagDatabase.from_dicts({}, remaining)
+            validate_asset_io(remaining, self.asset(asset_id).get("mode_tag"))
         except TagError as exc:
             raise CloudError(422, f"Can't delete {name}: {exc}") from None
         self._replace_tags(asset_id, remaining)
@@ -397,6 +405,9 @@ class CloudService:
             "writable": yes(tag.get("writable")), "role": tag.get("role", "operator"),
             "modbus_table": m.get("table", ""), "modbus_address": m.get("address", ""),
             "modbus_scale": m.get("scale", "") if m else "",
+            "modbus_type": m.get("type", ""), "modbus_word_order": m.get("word_order", ""), "modbus_bit": m.get("bit", ""),
+            "s7_address": (tag.get("s7") or {}).get("address", ""), "s7_type": (tag.get("s7") or {}).get("type", ""),
+            "s7_scale": (tag.get("s7") or {}).get("scale", "") if tag.get("s7") else "",
             "alarm_state": ("on" if a["state"] else "off") if "state" in a else "",
             "alarm_priority": a.get("priority", ""), "alarm_message": a.get("message", ""),
             "alarm_hihi": a.get("hihi", ""), "alarm_hi": a.get("hi", ""), "alarm_lo": a.get("lo", ""),
@@ -430,6 +441,11 @@ class CloudService:
         writer.writerow({"name": "LevelSP", "description": "Level setpoint", "kind": "SP", "type": "float", "unit": "%",
                          "min": 10, "max": 90, "decimals": 1, "writable": "yes", "role": "engineer",
                          "modbus_table": "holding", "modbus_address": 0, "modbus_scale": 10})
+        writer.writerow({"name": "FlowTotal", "description": "Flow totaliser", "kind": "AI", "type": "float", "unit": "m³",
+                         "min": 0, "max": 1000000, "decimals": 0, "modbus_table": "input", "modbus_address": 2,
+                         "modbus_type": "float32", "modbus_word_order": "big"})
+        writer.writerow({"name": "VSDReady", "description": "VSD ready (status word bit 0)", "kind": "DI", "type": "bool",
+                         "modbus_table": "input", "modbus_address": 10, "modbus_bit": 0})
         return out.getvalue()
 
     @staticmethod
@@ -480,6 +496,20 @@ class CloudService:
             if type_ == "float":
                 scale = number("modbus_scale")
                 tag["modbus"]["scale"] = 1 if scale is None else scale
+                if text("modbus_type"):
+                    tag["modbus"]["type"] = text("modbus_type").lower().replace("real", "float32").replace("dint", "int32")
+                if text("modbus_word_order"):
+                    order = text("modbus_word_order").lower()
+                    tag["modbus"]["word_order"] = {"abcd": "big", "cdab": "little"}.get(order, order)
+            elif text("modbus_bit"):
+                tag["modbus"]["bit"] = number("modbus_bit", integer=True)
+        if text("s7_address"):
+            tag["s7"] = {"address": text("s7_address")}
+            if text("s7_type"):
+                tag["s7"]["type"] = text("s7_type").lower()
+            if type_ == "float":
+                scale = number("s7_scale")
+                tag["s7"]["scale"] = 1 if scale is None else scale
         if type_ == "bool" and text("alarm_state"):
             state = text("alarm_state").lower()
             if state not in ("on", "off", "true", "false", "1", "0"):
@@ -530,6 +560,32 @@ class CloudService:
             imported.append(tag)
         if not imported:
             raise CloudError(422, "The CSV has no I/O rows")
+        return self._apply_import(asset_id, imported, mode, user, "csv")
+
+    def import_tia(self, asset_id: str, data: bytes, mode: str, user: str) -> dict[str, Any]:
+        """Import a TIA Portal PLC tag table (.xlsx) as S7 points."""
+        from .tia import TiaImportError, parse_tag_table
+
+        asset = self.asset(asset_id)
+        if mode not in ("replace", "merge"):
+            raise CloudError(422, "mode must be replace or merge")
+        try:
+            points, skipped = parse_tag_table(data)
+        except TiaImportError as exc:
+            raise CloudError(422, str(exc)) from None
+        if not points:
+            raise CloudError(422, f"No usable tags: all {len(skipped)} rows were skipped ({skipped[0]['reason']})")
+        if mode == "merge":  # keep ranges, units and alarms already set up for existing points
+            existing = {t["name"]: t for t in self.tags(asset_id)}
+            points = [{**existing[p["name"]], "s7": p["s7"]} if p["name"] in existing else p for p in points]
+        summary = self._apply_import(asset_id, points, mode, user, "TIA")
+        if asset["plc"]["protocol"] != "s7":
+            summary["note"] = "This asset's PLC connection isn't set to Siemens S7 yet."
+        return {**summary, "skipped": skipped}
+
+    def _apply_import(self, asset_id: str, imported: list[dict[str, Any]], mode: str, user: str,
+                      source: str) -> dict[str, Any]:
+        seen = {t["name"] for t in imported}
         current = self.tags(asset_id)
         names = {t["name"] for t in current}
         if mode == "replace":
@@ -540,13 +596,14 @@ class CloudService:
                 by_name[tag["name"]] = tag
             result = list(by_name.values())
         try:
-            TagDatabase.from_dicts({}, result)
+            validate_asset_io(result, self.asset(asset_id).get("mode_tag"))
         except TagError as exc:
             raise CloudError(422, f"Import rejected – nothing was changed: {exc}") from None
         self._replace_tags(asset_id, result)
         summary = {"added": len(seen - names), "updated": len(seen & names),
                    "removed": len(names - seen) if mode == "replace" else 0, "total": len(result)}
-        self.audit(user, "tag.import", asset_id, f"{mode}: +{summary['added']} ~{summary['updated']} -{summary['removed']}")
+        self.audit(user, "tag.import", asset_id,
+                   f"{source} {mode}: +{summary['added']} ~{summary['updated']} -{summary['removed']}")
         return summary
 
     # -- users ---------------------------------------------------------------------
@@ -697,7 +754,8 @@ class CloudService:
             "device": {"id": device["id"], "name": device["name"], "serial": device["serial"]},
             "settings": {"history_days": site["history_days"]},
             "assets": [{"id": a["id"], "name": a["name"], "description": a["description"], "screen": a["screen"],
-                        "plc": json.loads(a["plc"]), "tags": self.tags(a["id"])} for a in assets],
+                        "plc": json.loads(a["plc"]), "tags": self.tags(a["id"]),
+                        **({"mode_tag": a["mode_tag"]} if a.get("mode_tag") else {})} for a in assets],
             "users": users,
         }
         for asset in pkg["assets"]:

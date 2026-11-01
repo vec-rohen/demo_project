@@ -62,7 +62,7 @@ On a PC with internet, download the packages for the IoT2050's ARM processor,
 matching the device's Python version (here 3.11; use `3.9` for Debian 11 images):
 
 ```bash
-pip download --platform manylinux2014_aarch64 --only-binary=:all: --python-version 3.11 \
+pip download --platform manylinux2014_aarch64 --platform manylinux_2_28_aarch64 --only-binary=:all: --python-version 3.11 \
     -r deploy/iot2050/requirements-edge.txt -d wheels
 ```
 

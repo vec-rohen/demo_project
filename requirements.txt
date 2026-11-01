@@ -3,6 +3,8 @@ python-dotenv
 fastapi>=0.110
 uvicorn[standard]>=0.29
 pymodbus>=3.6,<4
+python-snap7>=2,<4
+openpyxl>=3.1
 # tests
 pytest
 httpx

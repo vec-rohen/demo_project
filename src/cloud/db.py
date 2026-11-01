@@ -60,6 +60,9 @@ class CloudDB:
                 self._db.execute("PRAGMA journal_mode=WAL")
             self._db.execute("PRAGMA foreign_keys=ON")
             self._db.executescript(SCHEMA)
+            columns = {r["name"] for r in self._db.execute("PRAGMA table_info(assets)")}
+            if "mode_tag" not in columns:  # added after the first release
+                self._db.execute("ALTER TABLE assets ADD COLUMN mode_tag TEXT")
 
     def q(self, sql: str, params: Iterable[Any] = ()) -> list[dict[str, Any]]:
         with self.lock:

@@ -46,7 +46,9 @@ function deviceStatus(d) {
 }
 
 function plcSummary(plc) {
-  return plc.protocol === "modbus" ? `Modbus ${plc.host}:${plc.port} #${plc.unit}` : "Simulator";
+  if (plc.protocol === "modbus") return `Modbus ${plc.host}:${plc.port} #${plc.unit}`;
+  if (plc.protocol === "s7") return `S7 ${plc.host} ${plc.rack}/${plc.slot}`;
+  return "Simulator";
 }
 
 async function act(fn, success) {
@@ -397,11 +399,7 @@ async function duplicateAsset(a, s) {
 }
 
 /* ---------------------------------------------------------------- assets */
-function addressText(t) {
-  const m = t.modbus;
-  if (!m) return "—";
-  return `${{ coil: "0x", discrete: "1x", input: "3x", holding: "4x" }[m.table]} ${m.address}${m.scale && m.scale !== 1 ? ` ÷${m.scale}` : ""}`;
-}
+const addressText = (t, proto) => TagForm.address(t, proto);
 
 function alarmText(t) {
   const a = t.alarm;
@@ -426,51 +424,70 @@ async function assetPage(id) {
     el("option", { value: "tank-demo", text: "Heated tank demo mimic", selected: a.screen === "tank-demo" }));
   const device = el("select", {}, el("option", { value: "", text: "Not assigned" }),
     ...a.site_devices.map((d) => el("option", { value: d.id, text: d.name, selected: d.id === a.device_id })));
+  const mode = el("select", {}, el("option", { value: "", text: "None – no Auto/Manual lock" }),
+    ...a.tags.filter((t) => t.type === "bool").map((t) =>
+      el("option", { value: t.name, text: `${t.name} – ${t.description || ""}`, selected: t.name === a.mode_tag })));
   const details = panel("Asset details", [], el("div", { class: "form-grid" },
     el("div", { class: "field" }, el("label", { text: "Name" }), name),
     el("div", { class: "field span2" }, el("label", { text: "Description" }), desc),
     el("div", { class: "field" }, el("label", { text: "Runs on device" }), device),
-    el("div", { class: "field" }, el("label", { text: "Overview screen" }), screen)),
+    el("div", { class: "field" }, el("label", { text: "Overview screen" }), screen),
+    el("div", { class: "field span2" }, el("label", { text: "Auto/Manual mode point" }), mode)),
+  el("p", { class: "muted small-print", text: "While this point is ON the PLC is in Auto, and points marked manual-only are locked for operators." }),
   el("div", { class: "btn-row" }, button("Save details", async () => {
     if (await act(() => api("PATCH", `/api/assets/${enc(id)}`, { name: name.value, description: desc.value, screen: screen.value,
-      device_id: device.value || null }), "Asset saved")) route();
+      device_id: device.value || null, mode_tag: mode.value || null }), "Asset saved")) route();
   }, "btn primary")));
 
   // PLC connection
   const plc = a.plc;
   const proto = el("select", {}, el("option", { value: "modbus", text: "Modbus TCP", selected: plc.protocol === "modbus" }),
+    el("option", { value: "s7", text: "Siemens S7 (S7-1200/1500/300)", selected: plc.protocol === "s7" }),
     el("option", { value: "sim", text: "Simulator (no PLC)", selected: plc.protocol === "sim" }));
   const host = el("input", { class: "mono", value: plc.host ?? "", placeholder: "192.168.1.10" });
-  const port = el("input", { type: "number", value: plc.port ?? 502 });
+  const port = el("input", { type: "number", value: plc.port ?? (plc.protocol === "s7" ? 102 : 502) });
   const unit = el("input", { type: "number", value: plc.unit ?? 1 });
+  const rack = el("input", { type: "number", value: plc.rack ?? 0 });
+  const slot = el("input", { type: "number", value: plc.slot ?? 1 });
   const poll = el("input", { type: "number", value: plc.poll_ms ?? 500, step: 50 });
-  const modbusFields = [el("div", { class: "field" }, el("label", { text: "PLC IP address" }), host),
-    el("div", { class: "field" }, el("label", { text: "Port" }), port),
-    el("div", { class: "field" }, el("label", { text: "Unit ID" }), unit)];
-  const syncProto = () => modbusFields.forEach((f) => { f.hidden = proto.value !== "modbus"; });
+  const field = (label, input) => el("div", { class: "field" }, el("label", { text: label }), input);
+  const netFields = [field("PLC IP address", host), field("Port", port)];
+  const modbusFields = [field("Unit ID", unit)];
+  const s7Fields = [field("Rack", rack), field("Slot", slot)];
+  const syncProto = () => {
+    netFields.forEach((f) => { f.hidden = proto.value === "sim"; });
+    modbusFields.forEach((f) => { f.hidden = proto.value !== "modbus"; });
+    s7Fields.forEach((f) => { f.hidden = proto.value !== "s7"; });
+    if (proto.value === "s7" && port.value === "502") port.value = 102;
+    if (proto.value === "modbus" && port.value === "102") port.value = 502;
+  };
   proto.onchange = syncProto;
   syncProto();
   const plcPanel = panel("PLC connection", [], el("div", { class: "form-grid" },
-    el("div", { class: "field" }, el("label", { text: "Protocol" }), proto), ...modbusFields,
-    el("div", { class: "field" }, el("label", { text: "Poll (ms)" }), poll)),
-  el("p", { class: "muted small-print", text: "The technician tests this connection on site from the device's Commissioning tab." }),
+    field("Protocol", proto), ...netFields, ...modbusFields, ...s7Fields, field("Poll (ms)", poll)),
+  el("p", { class: "muted small-print", text: "S7-1200/1500: rack 0, slot 1, with PUT/GET access allowed in the CPU settings. "
+    + "The technician tests this connection on site from the device's Commissioning tab." }),
   el("div", { class: "btn-row" }, button("Save PLC settings", async () => {
     const body = { protocol: proto.value, poll_ms: Number(poll.value) };
-    if (proto.value === "modbus") Object.assign(body, { host: host.value.trim(), port: Number(port.value), unit: Number(unit.value) });
+    if (proto.value !== "sim") Object.assign(body, { host: host.value.trim(), port: Number(port.value) });
+    if (proto.value === "modbus") body.unit = Number(unit.value);
+    if (proto.value === "s7") Object.assign(body, { rack: Number(rack.value), slot: Number(slot.value) });
     if (await act(() => api("PATCH", `/api/assets/${enc(id)}`, { plc: body }), "PLC settings saved")) route();
   }, "btn primary")));
 
   // I/O
   const fileInput = el("input", { type: "file", accept: ".csv,text/csv", hidden: true, onchange: (e) => importCsv(e, a) });
+  const tiaInput = el("input", { type: "file", accept: ".xlsx", hidden: true, onchange: (e) => importTia(e, a) });
   const ioPanel = panel(`I/O points (${a.tags.length})`, [
     button("Add point", () => editTag(a, null), "btn small primary"),
     el("label", { class: "btn small file-btn" }, "Import CSV…", fileInput),
+    el("label", { class: "btn small file-btn", title: "PLC tag table exported from TIA Portal (.xlsx)" }, "Import TIA tags…", tiaInput),
     el("a", { class: "btn small", href: `/api/assets/${enc(id)}/io.csv`, text: "Export CSV" }),
     el("a", { class: "btn small", href: "/api/io-template.csv", text: "CSV template" })],
   table(["Point", "Kind", "Address", "Range", "Alarm", "Access", ""], a.tags.map((t) => row(
     el("td", {}, el("div", { class: "io-desc", text: t.description || t.name }), el("div", { class: "io-name", text: t.name })),
     el("td", { class: "mono", text: `${t.kind} · ${t.type === "bool" ? "digital" : "analog"}` }),
-    el("td", { class: "mono", text: addressText(t) }),
+    el("td", { class: "mono", text: addressText(t, a.plc.protocol) }),
     t.type === "float" ? `${t.min ?? "—"} – ${t.max ?? "—"} ${t.unit || ""}` : "",
     alarmText(t),
     t.writable ? `Write: ${roleName(t.role || "operator")}` : "Read only",
@@ -482,6 +499,7 @@ async function assetPage(id) {
 
 function editTag(a, tag) {
   TagForm.open(tag, {
+    protocol: a.plc.protocol === "s7" ? "s7" : "modbus",
     exists: (name) => a.tags.some((t) => t.name === name),
     save: async (def, isNew) => {
       await api("PUT", `/api/assets/${enc(a.id)}/tags/${enc(def.name)}`, def);
@@ -508,6 +526,28 @@ async function importCsv(e, a) {
   const raw = await file.arrayBuffer();
   const r = await act(() => api("POST", `/api/assets/${enc(a.id)}/import?mode=${v.mode}`, undefined, { raw, type: "text/csv" }));
   if (r) { toast(`Imported: ${r.added} added, ${r.updated} updated${r.removed ? `, ${r.removed} removed` : ""}`); route(); }
+}
+
+async function importTia(e, a) {
+  const file = e.target.files[0];
+  e.target.value = "";
+  if (!file) return;
+  const v = await formDialog(`Import TIA tags from ${file.name}`, [{ name: "mode", label: "How to import", type: "select", value: "merge",
+    options: [["merge", "Merge – add new tags; for existing names update the S7 address and keep ranges, units and alarms"],
+      ["replace", "Replace – the tag table becomes this asset's complete I/O list"]] }],
+  { submit: "Import", intro: "In TIA Portal: PLC tags → open the tag table → Export. Each tag becomes an S7 point; check kinds, ranges and units afterwards." });
+  if (!v) return;
+  const raw = await file.arrayBuffer();
+  const r = await act(() => api("POST", `/api/assets/${enc(a.id)}/import-tia?mode=${v.mode}`, undefined,
+    { raw, type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }));
+  if (!r) return;
+  toast(`Imported: ${r.added} added, ${r.updated} updated${r.removed ? `, ${r.removed} removed` : ""}`);
+  if (r.note) toast(r.note, "error");
+  if (r.skipped.length) {
+    await confirmChange(`${r.skipped.length} tag(s) not imported`,
+      `<ul>${r.skipped.map((s) => `<li><b>${esc(s.name)}</b>: ${esc(s.reason)}</li>`).join("")}</ul>`, "OK");
+  }
+  route();
 }
 
 /* --------------------------------------------------------------- devices */

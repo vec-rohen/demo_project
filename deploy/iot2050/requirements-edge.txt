@@ -4,3 +4,4 @@ fastapi>=0.110,<1
 uvicorn>=0.29          # plain uvicorn: no C extensions to build on ARM
 websockets>=11         # live data to the browser
 pymodbus>=3.6,<4       # 3.8.x is the newest that runs on Python 3.9; both naming styles are supported
+python-snap7>=2,<4     # Siemens S7; 2.x (bundled native lib) on Python 3.9, 3.x (pure Python) on 3.10+

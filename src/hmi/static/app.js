@@ -46,8 +46,16 @@ const pct = (name, v = S.values[name]) => {
   if (!t || t.min == null || t.max == null || v == null) return 0;
   return Math.max(0, Math.min(100, ((v - t.min) / (t.max - t.min)) * 100));
 };
+function ago(t) {
+  const s = Math.max(0, Math.round(Date.now() / 1000 - t));
+  if (s < 90) return `${s} s ago`;
+  if (s < 5400) return `${Math.round(s / 60)} min ago`;
+  return `${(s / 3600).toFixed(1)} h ago`;
+}
 const timeStr = (t) => new Date(t * 1000).toLocaleTimeString([], { hour12: false });
-const isAuto = () => !!S.values.SP_AutoMode;
+// The asset's Auto/Manual tag (configured per asset; none means no mode lock).
+const modeTag = () => S.config?.asset?.mode_tag || null;
+const isAuto = () => !!(modeTag() && S.values[modeTag()]);
 
 /* Mirrors the server's checks so controls are greyed out with a reason; the server still enforces them. */
 const can = (role) => !!S.me && !S.me.must_change_password &&
@@ -112,6 +120,7 @@ function applyUpdate(msg) {
   S.values = msg.values;
   S.alarms = msg.alarms;
   S.connected = msg.connected;
+  S.lastGood = msg.last_good;
   for (const ev of msg.events) {
     if (ev.seq > S.lastSeq) { S.events.push(ev); S.lastSeq = ev.seq; }
   }
@@ -143,8 +152,19 @@ function renderStatus() {
   const chip = $("#conn-chip");
   chip.className = "chip " + (S.connected ? "ok" : "bad");
   $("#conn-text").textContent = S.connected === null ? "HMI server offline" : S.connected ? "PLC online" : "PLC comms lost";
+  // Values are only live while both the HMI server and the PLC are reachable; otherwise grey them out.
+  const stale = S.connected !== true;
+  document.body.classList.toggle("stale", stale && !!S.config);
+  const strip = $("#stale-strip");
+  strip.hidden = !stale || !S.config;
+  if (stale) {
+    const since = S.lastGood ? ` Values shown are from ${timeStr(S.lastGood)} (${ago(S.lastGood)}).` : " No values received yet.";
+    strip.textContent = (S.connected === null
+      ? "Lost connection to this device – reconnecting…"
+      : "PLC communication lost – the PLC isn't answering.") + since;
+  }
   const mode = $("#mode-chip");
-  mode.hidden = !S.tags.SP_AutoMode; // only assets with an auto/manual mode show it
+  mode.hidden = !modeTag(); // only assets with an auto/manual mode show it
   mode.textContent = isAuto() ? "AUTO" : "MANUAL";
   mode.className = "chip " + (isAuto() ? "" : "manual");
 
@@ -418,7 +438,7 @@ function buildSetpoints() {
   for (const btn of $$("#mode-switch button")) {
     btn.onclick = () => {
       const wantAuto = btn.dataset.mode === "true";
-      if (wantAuto !== isAuto()) writeTag("SP_AutoMode", wantAuto);
+      if (wantAuto !== isAuto()) writeTag(modeTag(), wantAuto);
     };
   }
 }
@@ -475,8 +495,8 @@ function syncInputs(card, tag) {
 }
 
 function renderSetpoints() {
-  $(".mode-panel").hidden = !S.tags.SP_AutoMode;
-  const modeReason = lockReason(S.tags.SP_AutoMode || {});
+  $(".mode-panel").hidden = !modeTag();
+  const modeReason = lockReason(S.tags[modeTag()] || {});
   for (const btn of $$("#mode-switch button")) {
     btn.setAttribute("aria-checked", String((btn.dataset.mode === "true") === isAuto()));
     btn.disabled = !!modeReason;

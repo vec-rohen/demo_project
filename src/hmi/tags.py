@@ -11,6 +11,7 @@ from typing import Any
 KINDS = ("DI", "DO", "AI", "AO", "SP")
 ROLES = ("viewer", "operator", "engineer", "integrator")
 MODBUS_TABLES = ("coil", "discrete", "input", "holding")
+MODBUS_TYPES = ("int16", "uint16", "int32", "uint32", "float32")
 ALARM_LIMITS = ("hihi", "hi", "lo", "lolo")
 TAG_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,63}$")
 
@@ -34,6 +35,7 @@ class Tag:
     role: str = "operator"  # minimum role allowed to write this tag
     alarm: dict[str, Any] | None = None
     modbus: dict[str, Any] | None = None
+    s7: dict[str, Any] | None = None
 
     def coerce(self, value: Any) -> bool | float:
         """Validate and convert an incoming write value for this tag."""
@@ -142,6 +144,41 @@ def validate_tag(entry: dict[str, Any]) -> Tag:
             raise TagError(f"{tag.name}: Modbus scale must be a positive number")
         if tag.writable and table in ("discrete", "input"):
             raise TagError(f"{tag.name}: {table} registers are read-only; use coil or holding for writable tags")
+        unknown = set(tag.modbus) - {"table", "address", "scale", "type", "word_order", "bit"}
+        if unknown:
+            raise TagError(f"{tag.name}: unknown Modbus setting(s) {', '.join(sorted(unknown))}")
+        dtype = tag.modbus.get("type", "int16")
+        if dtype not in MODBUS_TYPES:
+            raise TagError(f"{tag.name}: Modbus data type must be one of {', '.join(MODBUS_TYPES)}")
+        if tag.modbus.get("word_order", "big") not in ("big", "little"):
+            raise TagError(f"{tag.name}: word order must be big or little")
+        if "bit" in tag.modbus:
+            bit = tag.modbus["bit"]
+            if tag.type != "bool" or table not in ("input", "holding"):
+                raise TagError(f"{tag.name}: a bit number is only for digital tags in input/holding registers")
+            if not isinstance(bit, int) or not 0 <= bit <= 15:
+                raise TagError(f"{tag.name}: bit must be 0–15")
+        if table in ("coil", "discrete") and (tag.type != "bool" or "type" in tag.modbus):
+            raise TagError(f"{tag.name}: coils and discrete inputs hold digital (on/off) values only")
+    if tag.s7:
+        from .drivers.s7addr import S7AddressError, check_type, default_type, parse
+
+        unknown = set(tag.s7) - {"address", "type", "scale"}
+        if unknown:
+            raise TagError(f"{tag.name}: unknown S7 setting(s) {', '.join(sorted(unknown))}")
+        try:
+            addr = parse(tag.s7.get("address", ""))
+            dtype = tag.s7.get("type") or default_type(addr)
+            check_type(addr, dtype)
+        except S7AddressError as exc:
+            raise TagError(f"{tag.name}: {exc}") from None
+        if addr.size == "X" and tag.type != "bool":
+            raise TagError(f"{tag.name}: bit address {addr.text()} needs a digital (on/off) point")
+        if tag.writable and addr.area == "PE":
+            raise TagError(f"{tag.name}: inputs (%I) are read-only; use %Q, %M or a DB for writable points")
+        scale = tag.s7.get("scale", 1)
+        if not isinstance(scale, (int, float)) or scale <= 0:
+            raise TagError(f"{tag.name}: S7 scale must be a positive number")
     if tag.alarm:
         if tag.type == "bool":
             if "state" not in tag.alarm:

@@ -8,7 +8,8 @@
 #   sudo ./deploy/iot2050/install.sh --uninstall          # remove the app, keep data
 #   sudo ./deploy/iot2050/install.sh --uninstall --purge  # remove the app and all data
 #
-# Options: --port N (default 8000), --no-service (files + Python environment only,
+# Options: --port N (default 8000), --https (self-signed certificate; browsers ask
+# you to accept it once), --no-service (files + Python environment only,
 # e.g. inside a container), PYTHON=/usr/bin/python3.x to choose the interpreter.
 #
 # Re-running the script updates the app in place; the device database
@@ -26,6 +27,7 @@ PACKAGE=""
 UNINSTALL=0
 PURGE=0
 WITH_SERVICE=1
+HTTPS=0
 
 say()  { printf '\033[1m==>\033[0m %s\n' "$*"; }
 fail() { printf '\033[31mError:\033[0m %s\n' "$*" >&2; exit 1; }
@@ -38,7 +40,8 @@ while [ $# -gt 0 ]; do
     --uninstall) UNINSTALL=1; shift ;;
     --purge) PURGE=1; shift ;;
     --no-service) WITH_SERVICE=0; shift ;;
-    -h|--help) sed -n '2,17p' "$0"; exit 0 ;;
+    --https) HTTPS=1; shift ;;
+    -h|--help) sed -n '2,16p' "$0"; exit 0 ;;
     *) fail "unknown option $1 (see --help)" ;;
   esac
 done
@@ -74,7 +77,8 @@ PYV="$("$PYTHON" -c 'import sys; print("%d.%d" % sys.version_info[:2])')"
 if ! "$PYTHON" -c 'import venv, ensurepip' 2>/dev/null; then
   if command -v apt-get >/dev/null; then
     say "Installing python3-venv"
-    apt-get install -y "python3-venv" || apt-get install -y "python${PYV}-venv" \
+    { apt-get install -y "python${PYV}-venv" || apt-get install -y python3-venv \
+      || { apt-get update && { apt-get install -y "python${PYV}-venv" || apt-get install -y python3-venv; }; }; } \
       || fail "couldn't install python3-venv; install it manually and re-run"
   else
     fail "Python's venv module is missing; install python3-venv and re-run"
@@ -124,6 +128,38 @@ fi
   || fail "the app doesn't import on this Python; see the error above"
 
 # --- first-start package --------------------------------------------------------------
+# --- HTTPS certificate (self-signed, for the plant network) ----------------------------
+TLS_ARGS=""
+SCHEME=http
+if [ "$HTTPS" -eq 1 ]; then
+  command -v openssl >/dev/null || fail "openssl is needed for --https (apt install openssl)"
+  TLS_DIR="$DATA_DIR/tls"
+  install -d -m 750 -o "$SVC_USER" -g "$SVC_USER" "$TLS_DIR"
+  if [ ! -f "$TLS_DIR/cert.pem" ]; then
+    say "Creating a self-signed HTTPS certificate"
+    SAN="DNS:$(hostname),DNS:localhost,IP:127.0.0.1"
+    for ip in $(hostname -I 2>/dev/null); do case "$ip" in *.*) SAN="$SAN,IP:$ip" ;; esac; done
+    openssl req -x509 -newkey rsa:2048 -sha256 -days 3650 -nodes -subj "/CN=$(hostname) Plant HMI" \
+      -addext "subjectAltName=$SAN" -keyout "$TLS_DIR/key.pem" -out "$TLS_DIR/cert.pem" 2>/dev/null \
+      || fail "couldn't create the certificate"
+    chown "$SVC_USER:$SVC_USER" "$TLS_DIR/key.pem" "$TLS_DIR/cert.pem"
+    chmod 600 "$TLS_DIR/key.pem"
+  fi
+  TLS_ARGS=" --tls-cert $TLS_DIR/cert.pem --tls-key $TLS_DIR/key.pem"
+  SCHEME=https
+fi
+
+# --- network time: trends and alarm times are only as good as the device clock ----------
+if command -v timedatectl >/dev/null && [ "$WITH_SERVICE" -eq 1 ]; then
+  if [ "$(timedatectl show -p NTP --value 2>/dev/null)" != "yes" ]; then
+    say "Turning on network time (NTP)"
+    timedatectl set-ntp true 2>/dev/null || echo "    Couldn't enable NTP automatically – set up time sync on this device."
+  fi
+  if [ "$(timedatectl show -p NTPSynchronized --value 2>/dev/null)" != "yes" ]; then
+    echo "    Note: the clock isn't synchronised yet. It needs internet or a local NTP server; check with 'timedatectl'."
+  fi
+fi
+
 PACKAGE_ENV=""
 if [ -n "$PACKAGE" ]; then
   [ -f "$PACKAGE" ] || fail "package file $PACKAGE not found"
@@ -137,7 +173,7 @@ fi
 
 if [ "$WITH_SERVICE" -eq 0 ]; then
   say "Installed without a service. Start it with:"
-  echo "  cd $APP_DIR && sudo -u $SVC_USER env HMI_DB=$DATA_DIR/edge.db HMI_INITIAL_PASSWORD_FILE=$DATA_DIR/initial-admin-password venv/bin/python -m src.hmi --host 0.0.0.0 --port $PORT"
+  echo "  cd $APP_DIR && sudo -u $SVC_USER env HMI_DB=$DATA_DIR/edge.db HMI_INITIAL_PASSWORD_FILE=$DATA_DIR/initial-admin-password venv/bin/python -m src.hmi --host 0.0.0.0 --port $PORT$TLS_ARGS"
   exit 0
 fi
 
@@ -159,7 +195,7 @@ WorkingDirectory=$APP_DIR
 Environment=HMI_DB=$DATA_DIR/edge.db
 Environment=HMI_INITIAL_PASSWORD_FILE=$DATA_DIR/initial-admin-password
 $PACKAGE_ENV
-ExecStart=$APP_DIR/venv/bin/python -m src.hmi --host 0.0.0.0 --port $PORT
+ExecStart=$APP_DIR/venv/bin/python -m src.hmi --host 0.0.0.0 --port $PORT$TLS_ARGS
 Restart=always
 RestartSec=5
 # Hardening: the app only needs to write its own data folder, and its files
@@ -189,7 +225,8 @@ systemctl is-active --quiet "$SERVICE" || { journalctl -u "$SERVICE" -n 30 --no-
 ADDRS="$(hostname -I 2>/dev/null | tr ' ' '\n' | grep -E '^[0-9]+\.' || true)"
 echo
 say "Plant HMI is running ($(cat "$APP_DIR/VERSION"))"
-for ip in ${ADDRS:-localhost}; do echo "    http://$ip:$PORT"; done
+for ip in ${ADDRS:-localhost}; do echo "    $SCHEME://$ip:$PORT"; done
+[ "$HTTPS" -eq 1 ] && echo "    (self-signed certificate: the browser asks you to accept it the first time)"
 if [ -f "$DATA_DIR/initial-admin-password" ]; then
   echo
   say "First sign-in (one-time password – you'll be asked to change it):"

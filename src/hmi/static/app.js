@@ -52,7 +52,7 @@ function ago(t) {
   if (s < 5400) return `${Math.round(s / 60)} min ago`;
   return `${(s / 3600).toFixed(1)} h ago`;
 }
-const timeStr = (t) => new Date(t * 1000).toLocaleTimeString([], { hour12: false });
+const timeStr = (t) => fmtClock(t);
 // The asset's Auto/Manual tag (configured per asset; none means no mode lock).
 const modeTag = () => S.config?.asset?.mode_tag || null;
 const isAuto = () => !!(modeTag() && S.values[modeTag()]);
@@ -202,7 +202,8 @@ function renderOverview() {
 function renderStatusPanel() {
   const grid = $("#status-grid");
   const digital = Object.values(S.tags).filter((t) => t.type === "bool");
-  if (grid.childElementCount !== digital.length) {
+  if (grid.childElementCount !== digital.length || (!digital.length && !grid.dataset.empty)) {
+    grid.dataset.empty = digital.length ? "" : "1";
     grid.replaceChildren(...digital.map((t) => el("div", { class: "status-item", "data-status": t.name },
       el("span", { class: "lamp" }),
       el("span", {}, el("div", { class: "io-desc", text: t.description || t.name }),
@@ -254,7 +255,7 @@ function renderKpisAndAlarms() {
   if (!kpis.childElementCount) {
     for (const name of kpiTags()) {
       kpis.append(el("div", { class: "kpi", "data-kpi": name },
-        el("span", { class: "kpi-name", text: S.tags[name].description }),
+        el("span", { class: "kpi-name", text: S.tags[name].description || name }),
         el("span", { class: "kpi-val" }),
         el("canvas", { height: 26 })));
     }
@@ -592,7 +593,7 @@ function timeAxis(window) {
   if (window <= 900) return [window <= 300 ? 60 : 180, (t) => timeStr(t).slice(0, 5)];
   if (window <= 3600) return [600, (t) => timeStr(t).slice(0, 5)];
   if (window <= 86400) return [3 * 3600, (t) => timeStr(t).slice(0, 5)];
-  return [86400, (t) => new Date(t * 1000).toLocaleDateString([], { day: "numeric", month: "short" })];
+  return [86400, (t) => fmtDay(t)];
 }
 
 function renderTrend() {
@@ -625,7 +626,7 @@ function renderTrend() {
     ctx.textAlign = "right"; ctx.fillText(`${p}%`, pad.l - 6, y + 4);
   }
   const [step, label] = timeAxis(S.trendWindow);
-  const tz = new Date().getTimezoneOffset() * 60; // align day/hour grid lines to local time
+  const tz = -tzOffset(tStart); // align day/hour grid lines to the site's local time
   ctx.textAlign = "center";
   for (let t = Math.ceil((tStart - tz) / step) * step + tz; t <= tEnd; t += step) {
     const x = Math.round(xFor(t)) + 0.5;
@@ -712,7 +713,7 @@ function renderAlarms() {
   if (tbody.dataset.sig === `${filter}:${S.lastSeq}`) return; // nothing new
   tbody.dataset.sig = `${filter}:${S.lastSeq}`;
   tbody.replaceChildren(...events.map((e) => el("tr", {},
-    el("td", { class: "time", text: new Date(e.t * 1000).toLocaleString([], { hour12: false }) }),
+    el("td", { class: "time", text: fmtDateTime(e.t) }),
     el("td", {}, el("span", { class: `ev-kind ${e.kind}`, text: e.kind })),
     el("td", { text: e.message }),
     el("td", { class: "muted", text: e.user || "" }))));
@@ -893,7 +894,7 @@ function drawUsers() {
         el("div", { class: "muted", text: u.full_name || "" })),
       el("td", {}, roleSel),
       el("td", {}, status),
-      el("td", { class: "time", text: u.last_login ? new Date(u.last_login * 1000).toLocaleString([], { hour12: false }) : "Never" }),
+      el("td", { class: "time", text: u.last_login ? fmtDateTime(u.last_login) : "Never" }),
       actions);
   }));
 }
@@ -953,6 +954,17 @@ function initUserAdmin() {
     dlg.close();
     refreshUsers();
   });
+}
+
+// Warn when the device clock disagrees with this computer: trend and alarm times would be wrong.
+function checkClock(site) {
+  const drift = site.server_time - Date.now() / 1000;
+  if (Math.abs(drift) < 120) return;
+  const mins = Math.round(Math.abs(drift) / 60);
+  const strip = $("#clock-strip");
+  strip.textContent = `The device clock is ${mins} min ${drift > 0 ? "ahead of" : "behind"} this computer – ` +
+    "trend and alarm times may be wrong. Check the IoT2050 has network time (NTP).";
+  strip.hidden = false;
 }
 
 /* ------------------------------------------------- unconfigured device */
@@ -1040,13 +1052,22 @@ function initTheme() {
 
 async function init() {
   initTheme();
-  setInterval(() => { $("#clock").textContent = new Date().toLocaleTimeString([], { hour12: false }); }, 1000);
+  setInterval(() => { $("#clock").textContent = fmtClock(Date.now() / 1000); }, 1000);
   S.me = await api("GET", "/api/me");
   initAccount();
   S.site = await api("GET", "/api/site");
+  setTimeZone(S.site.site?.timezone);
+  $("#clock").title = `Site time (${tzName()})`;
+  checkClock(S.site);
   S.assetId = pickAsset();
   if (!S.assetId) { showUnconfigured(); return; }
-  S.config = await api("GET", `${A()}/config`);
+  // An asset restarts for a few seconds after its settings change; wait for it rather than failing.
+  for (let attempt = 0; ; attempt++) {
+    try { S.config = await api("GET", `${A()}/config`); break; } catch (err) {
+      if (attempt >= 10 || !/Unknown asset/.test(err.message)) throw err;
+      await new Promise((r) => setTimeout(r, 1000));
+    }
+  }
   for (const t of S.config.tags) S.tags[t.name] = t;
   renderSiteHeader();
   if (!isDemoScreen()) S.pens = new Set(kpiTags().slice(0, 4));

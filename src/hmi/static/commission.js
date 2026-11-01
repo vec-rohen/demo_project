@@ -59,13 +59,15 @@ function renderCommission() {
 /* --- device & package */
 function renderDeviceFacts() {
   const { client, site, device, package: pkg } = S.site;
-  const when = (t) => (t ? new Date(t * 1000).toLocaleString([], { hour12: false }) : "—");
+  const when = (t) => (t ? fmtDateTime(t) : "—");
   const facts = [
     ["Client", client ? `${client.name} (${client.id})` : "—"],
     ["Site", site ? `${site.name} (${site.id})` : "—"],
     ["Device", device ? `${device.name} (${device.id})` : "—"],
     ["Assets", S.site.assets.map((a) => a.name).join(", ")],
     ["Package", pkg ? `v${pkg.version} · loaded ${when(pkg.applied_at)} by ${pkg.applied_by} (${pkg.source})` : "—"],
+    ["Clock", `${fmtDateTime(S.site.server_time)} ${tzName()} · ` + (S.site.clock_synced === true ? "synchronised (NTP)"
+      : S.site.clock_synced === false ? "⚠ NOT synchronised – enable NTP on the device" : "sync status unknown")],
   ];
   $("#device-facts").replaceChildren(...facts.flatMap(([k, v]) => [el("dt", { text: k }), el("dd", { text: v })]));
   const n = S.site.pending_changes;
@@ -116,7 +118,7 @@ async function openChanges() {
   };
   const asset = (id) => S.site.assets.find((a) => a.id === id)?.name || id || "";
   $("#changes-table tbody").replaceChildren(...changes.slice().reverse().map((c) => el("tr", {},
-    el("td", { class: "time", text: new Date(c.t * 1000).toLocaleString([], { hour12: false }) }),
+    el("td", { class: "time", text: fmtDateTime(c.t) }),
     el("td", { text: c.user }),
     el("td", {}, el("div", { text: c.target }), el("div", { class: "muted", text: asset(c.asset_id) })),
     el("td", { class: "change-desc", text: describe(c) }),
@@ -234,7 +236,7 @@ function buildIOTable() {
         onclick: () => markCheck(t, check?.status === status ? null : status),
       })));
     const by = check
-      ? el("div", {}, el("div", { text: `${check.user} · ${new Date(check.t * 1000).toLocaleString([], { hour12: false })}` }),
+      ? el("div", {}, el("div", { text: `${check.user} · ${fmtDateTime(check.t)}` }),
         check.note ? el("div", { class: "muted", text: check.note }) : null)
       : el("span", { class: "muted", text: "—" });
     return el("tr", { class: check ? `checked-${check.status}` : "" },
@@ -297,12 +299,12 @@ function exportReport() {
   const q = (v) => `"${String(v ?? "").replace(/"/g, '""')}"`;
   const lines = [
     ["I/O commissioning report"], ["Client", client?.name], ["Site", site?.name], ["Device", device?.id],
-    ["Asset", asset?.name], ["Generated", new Date().toLocaleString()], ["By", S.me.username], [],
+    ["Asset", asset?.name], ["Generated", `${fmtDateTime(Date.now() / 1000)} (${tzName()})`], ["By", S.me.username], [],
     ["Tag", "Description", "Kind", "Address", "Value at export", "Result", "Note", "Checked by", "Checked at"],
     ...C.tags.map((t) => {
       const c = C.checks[t.name];
       return [t.name, t.description, t.kind, formatAddress(t), fmt(t.name), c ? CHECK_LABEL[c.status] : "Not checked",
-        c?.note, c?.user, c ? new Date(c.t * 1000).toLocaleString() : ""];
+        c?.note, c?.user, c ? fmtDateTime(c.t) : ""];
     }),
   ];
   const csv = lines.map((row) => row.map(q).join(",")).join("\r\n");

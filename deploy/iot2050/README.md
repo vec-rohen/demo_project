@@ -44,7 +44,13 @@ Then, from a laptop on the same network:
    temporary admin account with your staff (as integrators) and the client's users.
 4. On **Commissioning**: test the PLC connection, then work through the I/O check.
 
-Options: `--port 80` (serves on the standard web port), `--package site.json`
+The installer also turns on network time (NTP) if it's off: trend and alarm
+times are only as good as the device clock. The clock needs internet or a local
+NTP server; check it with `timedatectl` (the Commissioning tab shows it too).
+
+Options: `--https` (self-signed certificate so passwords aren't sent in plain
+text; browsers ask you to accept it once – on iPhone/iPad open the address in
+Safari first), `--port 80` (serves on the standard web port), `--package site.json`
 (configure on first start instead of using the browser),
 `PYTHON=/usr/bin/python3.11` to pick a specific Python.
 
@@ -92,7 +98,11 @@ add `--purge` to delete it as well.
 
 ## Security notes
 
-- The HMI listens on the plant network over plain HTTP. Keep the IoT2050's web
-  port off the internet; for remote access use the cloud link (next step) or a VPN.
+- Without `--https` the HMI listens on the plant network over plain HTTP. Either
+  way, keep the IoT2050's web port off the internet; for remote access use the
+  cloud link (next step) or a VPN.
+- Siemens S7 PLCs need *PUT/GET communication* allowed in the CPU's protection
+  settings. Allow it only on CPUs the IoT2050 must read, and keep that network
+  segment closed.
 - The service is sandboxed by systemd: it runs as `plant-hmi`, can only write
   `/var/lib/plant-hmi`, and its files are private to that account.

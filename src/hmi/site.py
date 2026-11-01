@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import socket
+import subprocess
 import time
 from typing import Any, Callable
 
@@ -23,6 +24,25 @@ from .tags import TagDatabase
 log = logging.getLogger(__name__)
 
 DriverFactory = Callable[[dict[str, Any], TagDatabase], Driver]
+_clock_cache: tuple[float, bool | None] = (0.0, None)
+
+
+def clock_synced() -> bool | None:
+    """Whether the device clock is synchronised by NTP (None if it can't be told).
+    Trends and alarm times are only as good as this clock."""
+    global _clock_cache
+    if time.time() - _clock_cache[0] < 60:
+        return _clock_cache[1]
+    result = None
+    try:
+        out = subprocess.run(["timedatectl", "show", "-p", "NTPSynchronized", "--value"],
+                             capture_output=True, text=True, timeout=2)
+        if out.returncode == 0 and out.stdout.strip() in ("yes", "no"):
+            result = out.stdout.strip() == "yes"
+    except (OSError, subprocess.SubprocessError):
+        pass
+    _clock_cache = (time.time(), result)
+    return result
 
 
 class SiteManager:
@@ -130,6 +150,8 @@ class SiteManager:
             "pending_changes": len(self.store.changes(pending_only=True)),
             "configured": bool(assets),
             "hostname": socket.gethostname(),
+            "server_time": time.time(),
+            "clock_synced": clock_synced(),
         }
 
     async def test_connection(self, asset_id: str, plc: dict[str, Any], timeout: float = 10.0) -> dict[str, Any]:

@@ -782,3 +782,37 @@ def test_s7_settings_validation():
     pkg["assets"][0]["plc"]["slot"] = 99
     with pytest.raises(PackageError, match="slot"):
         apply_package(Store(), pkg, "t")
+
+
+def test_unreachable_plc_does_not_block_restart(edge, store):
+    """Changing settings for a PLC that's switched off returns quickly and keeps the asset available."""
+    from src.hmi.drivers.base import Driver
+
+    class HangingDriver(Driver):
+        async def start(self):
+            await asyncio.sleep(30)          # like a TCP connect to an absent PLC
+
+        async def stop(self):
+            await asyncio.sleep(30)          # and a disconnect stuck behind it
+
+        async def read_all(self):
+            await asyncio.sleep(30)
+            return {}
+
+        async def write(self, name, value):
+            pass
+
+    def factory(plc, db):
+        return HangingDriver(db) if plc["protocol"] == "modbus" else SimulatorDriver(db, seed=1)
+
+    app = create_app(edge, site=SiteManager(edge, driver_factory=factory, poll_interval=0.05))
+    with TestClient(app) as c:
+        login(c, "integ")
+        t0 = time.time()
+        r = c.put(f"{A}/plc", json={"protocol": "modbus", "host": "10.255.255.1", "port": 502, "poll_ms": 500})
+        assert r.status_code == 200 and time.time() - t0 < 5
+        assert c.get(f"{A}/config").status_code == 200        # asset is there straight away
+        assert c.get(f"{A}/state").json()["connected"] is False
+        t0 = time.time()
+        assert c.put(f"{A}/plc", json={"protocol": "sim", "poll_ms": 250}).status_code == 200
+        assert time.time() - t0 < 6                            # old stuck connection doesn't hold it up

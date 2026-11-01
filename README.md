@@ -45,9 +45,19 @@ device. Every portal change is recorded in the **Activity log**.
 
 I/O CSV columns: `name, description, kind (DI/DO/AI/AO/SP), type (bool/float), unit, min,
 max, decimals, writable (yes), role, modbus_table (coil/discrete/input/holding),
-modbus_address, modbus_scale, alarm_state (on/off), alarm_priority, alarm_message,
-alarm_hihi, alarm_hi, alarm_lo, alarm_lolo, alarm_deadband, manual_only`. Comma,
-semicolon or tab separated; Excel's UTF-8 or Windows encodings both work.
+modbus_address, modbus_scale, modbus_type, modbus_word_order, modbus_bit, s7_address,
+s7_type, s7_scale, alarm_state (on/off), alarm_priority, alarm_message, alarm_hihi,
+alarm_hi, alarm_lo, alarm_lolo, alarm_deadband, manual_only`. Comma, semicolon or tab
+separated; Excel's UTF-8 or Windows encodings both work.
+
+**Siemens PLCs:** on the asset, *Import TIA tags…* takes a PLC tag table exported from
+TIA Portal (PLC tags → open the table → Export, .xlsx). Each tag becomes an S7 point with
+its address and type; the kind (DI/DO/AI/AO/SP) is guessed from the address and *Hmi
+Writeable*. Strings, times and structures are skipped with a reason. *Merge* keeps the
+ranges, units and alarms you've already set for existing points.
+
+**Auto/Manual:** on the asset, choose the digital point that is ON while the PLC runs in
+Auto. Points marked *manual-only* are locked for operators while it's on.
 
 # Edge HMI
 
@@ -117,17 +127,42 @@ the full layout. Packages are validated before anything is changed.
 
 Each tag has a kind (`DI`, `DO`, `AI`, `AO`, `SP`), type (`bool`/`float`),
 units, engineering range, whether operators may write it, the minimum role
-allowed to change it, optional alarms, and a Modbus address:
+allowed to change it, optional alarms, and a PLC address for the asset's protocol:
 
 ```json
 {"name": "AI_TankLevel", "kind": "AI", "type": "float", "unit": "%", "min": 0, "max": 100,
  "alarm": {"hi": "SP_LevelHiAlarm", "lo": 10, "deadband": 1},
- "modbus": {"table": "input", "address": 0, "scale": 10}}
+ "modbus": {"table": "input", "address": 0, "type": "float32", "word_order": "big"},
+ "s7": {"address": "%DB1.DBD4", "type": "real"}}
 ```
 
-`table` is `coil`, `discrete`, `input` or `holding`; analog values are signed
-16-bit registers divided by `scale`. Other protocols (S7, OPC UA) can be added
-by implementing the small `Driver` interface in `src/hmi/drivers/base.py`.
+**Modbus TCP** (`"plc": {"protocol": "modbus", "host": ..., "port": 502, "unit": 1}`):
+`table` is `coil`, `discrete`, `input` or `holding`; `type` is `int16` (default),
+`uint16`, `int32`, `uint32` or `float32`; `word_order` `big` (ABCD, default) or `little`
+(CDAB) for 32-bit values; `bit` 0–15 for a digital point inside a register (writes
+change only that bit); `scale` divides the raw value. Reads are batched within the
+protocol's limits, so addresses can be spread out.
+
+**Siemens S7** (`"plc": {"protocol": "s7", "host": ..., "rack": 0, "slot": 1}` – S7-1200/1500
+use rack 0 slot 1, S7-300 slot 2): TIA addresses `%I0.0 %Q0.1 %M10.3 %IW64 %QW2 %MD20
+%DB1.DBX0.0 %DB1.DBW2 %DB1.DBD4` with `type` `byte/sint/usint`, `int/uint/word`,
+`real/dint/udint/dword`. In TIA Portal allow *PUT/GET communication* in the CPU's
+protection settings and turn off *Optimized block access* on DBs the HMI reads.
+
+An asset's `mode_tag` names its Auto/Manual point (see the portal notes above).
+
+**When the PLC stops answering**, values grey out with the time they were last
+fresh, alarms and trends stop using the frozen values, and a *PLC communication
+lost* alarm is raised after 10 s. Changing PLC settings never waits more than a
+couple of seconds for an unreachable PLC.
+
+**Time:** the HMI shows times in the site's time zone (from the package), whatever
+the viewer's computer is set to. The Commissioning tab shows the device clock and
+whether it's synchronised; a banner warns if it's more than two minutes out.
+
+**HTTPS:** install with `--https` for a self-signed certificate (browsers ask you to
+accept it once), or run `python -m src.hmi --tls-cert cert.pem --tls-key key.pem`.
+Session cookies are then marked Secure.
 
 ## iPhone, iPad and other tablets
 
@@ -176,7 +211,22 @@ Device-wide: `/api/site`, `/api/package` (get/post), `/api/changes`,
 > HTTPS (a reverse proxy such as Caddy or nginx) and set `HMI_SECURE_COOKIES=1`
 > so passwords and session cookies never cross the network unencrypted.
 
-Run the tests with `python -m pytest tests`.
+## Tests
+
+```bash
+python -m pytest tests --ignore=tests/e2e      # unit & API tests (Python 3.9+)
+pip install playwright && python -m playwright install chromium
+python -m pytest tests/e2e                     # browser walkthroughs of the HMI and portal
+```
+
+The browser tests start real edge and portal servers and drive them in Chromium:
+live values, setpoints, alarms, Auto/Manual locks, commissioning, stale data, phone
+layout, portal set-up → publish → load on a device, TIA import and a fresh device's
+setup screen. Without a browser installed they're skipped.
+
+GitHub Actions (`.github/workflows/ci.yml`) runs on every push: the unit tests on
+Python 3.9, 3.11 and 3.12 (the IoT2050 images and current), the browser tests, and the
+IoT2050 installer (shellcheck, an install, and an HTTPS start as the service account).
 
 ---
 

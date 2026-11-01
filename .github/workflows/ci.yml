@@ -1,0 +1,67 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  tests:
+    name: Unit & API tests (Python ${{ matrix.python }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 3.9 = Debian 11 based IoT2050 images, 3.11 = Debian 12 based, 3.12 = current
+        python: ["3.9", "3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+      - name: Install
+        run: |
+          pip install -r deploy/iot2050/requirements-edge.txt
+          pip install openpyxl pytest httpx
+      - name: Test
+        run: python -m pytest tests --ignore=tests/e2e -q
+
+  browser:
+    name: Browser end-to-end tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install
+        run: |
+          pip install -r deploy/iot2050/requirements-edge.txt
+          pip install openpyxl pytest httpx playwright
+          python -m playwright install --with-deps chromium
+      - name: Test
+        env:
+          E2E_REQUIRED: "1"
+        run: python -m pytest tests/e2e -q
+
+  installer:
+    name: IoT2050 installer checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Shellcheck
+        run: shellcheck deploy/iot2050/install.sh
+      - name: Install without systemd (Python environment, app import)
+        run: sudo ./deploy/iot2050/install.sh --no-service --https --port 8443
+      - name: Start as the service account and answer over HTTPS
+        run: |
+          cd /opt/plant-hmi
+          sudo -u plant-hmi env HMI_DEMO=1 HMI_DB=/var/lib/plant-hmi/edge.db \
+            venv/bin/python -m src.hmi --host 127.0.0.1 --port 8443 \
+            --tls-cert /var/lib/plant-hmi/tls/cert.pem --tls-key /var/lib/plant-hmi/tls/key.pem &
+          for i in $(seq 1 30); do
+            sudo curl -sf --cacert /var/lib/plant-hmi/tls/cert.pem https://localhost:8443/login -o /dev/null && exit 0
+            sleep 1
+          done
+          exit 1

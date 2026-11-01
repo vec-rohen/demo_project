@@ -75,3 +75,27 @@ function downloadText(filename, text, type = "text/csv") {
   link.click();
   link.remove();
 }
+
+/* --- time zone ---------------------------------------------------------------
+   The edge HMI shows times in the site's time zone (from its package), so an
+   operator on site and an engineer in another state see the same clock. */
+let SITE_TZ;  // undefined = the browser's own zone
+function setTimeZone(tz) {
+  try {
+    new Intl.DateTimeFormat(undefined, { timeZone: tz });
+    SITE_TZ = tz;
+  } catch { SITE_TZ = undefined; } // unknown zone name: fall back to the browser's
+}
+const fmtClock = (t) => new Date(t * 1000).toLocaleTimeString([], { hour12: false, timeZone: SITE_TZ });
+const fmtDateTime = (t) => new Date(t * 1000).toLocaleString([], { hour12: false, timeZone: SITE_TZ });
+const fmtDay = (t) => new Date(t * 1000).toLocaleDateString([], { day: "numeric", month: "short", timeZone: SITE_TZ });
+// Seconds to add to UTC to get site-local time at instant t (for aligning trend grid lines).
+function tzOffset(t) {
+  const parts = Object.fromEntries(new Intl.DateTimeFormat("en-US", { timeZone: SITE_TZ, hourCycle: "h23",
+    year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit" })
+    .formatToParts(new Date(t * 1000)).map((p) => [p.type, p.value]));
+  const local = Date.UTC(+parts.year, +parts.month - 1, +parts.day, +parts.hour, +parts.minute, +parts.second) / 1000;
+  return Math.round(local - Math.floor(t));
+}
+const tzName = () => new Intl.DateTimeFormat([], { timeZone: SITE_TZ, timeZoneName: "short" })
+  .formatToParts(new Date()).find((p) => p.type === "timeZoneName")?.value || "";

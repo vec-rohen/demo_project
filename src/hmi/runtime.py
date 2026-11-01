@@ -30,6 +30,8 @@ HISTORY_DEADBAND = 0.005     # ...or when it moves more than 0.5 % of its span
 HISTORY_FLUSH_S = 5.0
 COMMS_ALARM = "comms"          # alarm id for "PLC communication lost"
 COMMS_ALARM_DELAY_S = 10.0     # ride through short blips (e.g. a PLC restart) before alarming
+START_WAIT_S = 2.0             # how long start-up waits for a first reading before carrying on
+STOP_WAIT_S = 2.0              # how long a restart waits for the old PLC connection to close
 
 
 class Runtime:
@@ -71,10 +73,15 @@ class Runtime:
 
     async def start(self) -> None:
         self._seed_history()
-        await self.driver.start()
         self._event("system", f"{self.db.plant.get('name', self.asset_id)} started ({type(self.driver).__name__})")
-        await self.poll_once()
+        self._first_poll = asyncio.Event()
         self._task = asyncio.create_task(self._run(), name=f"poll-{self.asset_id}")
+        # Give a responsive PLC a moment to deliver first values, but never hold up start-up
+        # (or a settings change) waiting for one that's switched off or unreachable.
+        try:
+            await asyncio.wait_for(asyncio.shield(self._first_poll.wait()), timeout=START_WAIT_S)
+        except asyncio.TimeoutError:
+            pass
 
     async def stop(self) -> None:
         if self._task:
@@ -83,8 +90,13 @@ class Runtime:
                 await self._task
             except asyncio.CancelledError:
                 pass
-        await self.driver.stop()
         self._flush_history(force=True)
+        try:
+            # A driver stuck in a connection attempt to an unreachable PLC finishes closing
+            # in the background; don't keep the asset offline waiting for it.
+            await asyncio.wait_for(asyncio.shield(self.driver.stop()), timeout=STOP_WAIT_S)
+        except asyncio.TimeoutError:
+            log.warning("%s: PLC connection still closing in the background", self.asset_id)
 
     def _event(self, kind: str, message: str, **extra: Any) -> dict[str, Any]:
         return self.events.add(kind, message, asset=self.asset_id, **extra)
@@ -98,11 +110,16 @@ class Runtime:
             buf.extend(self.store.history(self.asset_id, name, since, max_points=buf.maxlen))
 
     async def _run(self) -> None:
+        try:
+            await self.driver.start()
+        except Exception:  # noqa: BLE001 - the poll loop keeps retrying the connection
+            log.exception("%s: driver start failed", self.asset_id)
         while True:
             try:
                 await self.poll_once()
             except Exception:  # noqa: BLE001 - a bad scan must not kill the HMI
                 log.exception("poll failed")
+            self._first_poll.set()
             await asyncio.sleep(self.poll_interval)
 
     async def poll_once(self) -> None:
